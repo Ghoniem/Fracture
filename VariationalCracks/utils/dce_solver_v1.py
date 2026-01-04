@@ -33,7 +33,6 @@ This oversampled strategy removes the checkerboard mode that can plague collocat
 from __future__ import annotations
 from dataclasses import dataclass
 import numpy as np
-import math
 
 
 def rot2(theta: float) -> np.ndarray:
@@ -54,6 +53,18 @@ def tip_weight(x, a, eps=1e-14):
     x = np.asarray(x, dtype=float)
     val = np.maximum(a * a - x * x, eps)
     return 1.0 / np.sqrt(val)
+
+
+def element_nodes(a: float, ne: int, node_distribution: str = "uniform") -> np.ndarray:
+    """Element boundary nodes spanning [-a,a] (size ne+1)."""
+    nd = str(node_distribution).lower().strip()
+    if nd == "uniform":
+        return np.linspace(-a, a, ne + 1, dtype=float)
+    if nd == "tip_dense":
+        # cosine clustering: x=a*cos(theta), theta in [pi,0] gives increasing x
+        theta = np.linspace(np.pi, 0.0, ne + 1)
+        return a * np.cos(theta)
+    raise ValueError("node_distribution must be 'uniform' or 'tip_dense'.")
 
 
 @dataclass(frozen=True)
@@ -142,6 +153,26 @@ def _stress_edge_by(x, y, b, mu, nu):
 
 
 class DCESingleCrackStatic:
+    def make_nodes(self, ne_half: int, node_distribution: str = "uniform") -> np.ndarray:
+        """Return nodal x-locations along the crack in local coordinates [-a, a].
+
+        node_distribution:
+          - "uniform": equally spaced nodes
+          - "tip_dense": cosine-clustered nodes (Chebyshev–Lobatto), dense near ±a
+        """
+        a = self.crack.half_length
+        kind = (node_distribution or "uniform").lower()
+        n = 2 * ne_half + 1
+        if n < 2:
+            return np.array([0.0], dtype=float)
+        if kind == "uniform":
+            return np.linspace(-a, a, n)
+        if kind == "tip_dense":
+            i = np.arange(n, dtype=float)
+            x = np.cos(np.pi * i / (n - 1))  # 1..-1
+            return a * x[::-1]               # -a..a
+        raise ValueError(f"Unknown node_distribution '{node_distribution}'. Use 'uniform' or 'tip_dense'.")
+
     def __init__(self, material: Material, crack: Crack, applied: AppliedStress):
         self.material = material
         self.crack = crack
@@ -165,45 +196,30 @@ class DCESingleCrackStatic:
     def M(self) -> float:
         mu = self.material.mu
         kappa = self.material.kappa
-        return (2.0 * mu / (np.pi * (kappa + 1.0))) * (16.0 * np.pi**2)  # scale fix (kernel normalization)
+        return 2.0 * mu / (np.pi * (kappa + 1.0))
 
-    def solve(self, ne_half: int, representation: str = "delta_collocation", **kw):
+    def solve(self, ne_half: int, representation: str = "delta_collocation", *, node_distribution: str = "uniform", **kw):
         rep = representation.lower()
-        compute_sif = bool(kw.pop("compute_sif", True))
-        sif_kw = kw.pop("sif_kw", None)
-
         if rep == "delta_collocation":
-            res = self._solve_delta_collocation(ne_half=ne_half, **kw)
-        elif rep == "cheb_quad":
-            res = self._solve_cheb_quad(ne_half=ne_half, **kw)
-        elif rep == "cheb_spectral":
-            res = self._solve_cheb_spectral(ne_half=ne_half, **kw)
-        else:
-            raise ValueError(f"Unknown representation '{representation}'")
-
-        if compute_sif:
-            try:
-                if sif_kw is None:
-                    KI, KII, meta = self.fit_sif_from_cod(res)
-                else:
-                    KI, KII, meta = self.fit_sif_from_cod(res, **dict(sif_kw))
-                res["K_fit_cod"] = dict(KI=KI, KII=KII, meta=meta)
-            except Exception as e:
-                # Keep solver usable even if fit fails (e.g., too coarse mesh)
-                res["K_fit_cod"] = dict(error=str(e))
-
-        return res
+            return self._solve_delta_collocation(ne_half=ne_half, node_distribution=node_distribution, **kw)
+        if rep == "cheb_quad":
+            return self._solve_cheb_quad(ne_half=ne_half, node_distribution=node_distribution, **kw)
+        if rep == "cheb_spectral":
+            return self._solve_cheb_spectral(ne_half=ne_half, **kw)
+        raise ValueError(f"Unknown representation '{representation}'")
 
     def _solve_delta_collocation(
         self,
         ne_half: int,
+        *,
+        node_distribution: str = "uniform",
         nq_src: int = 2,
         nq_col: int = 4,
         ridge: float = 1e-14,
     ):
         a = self.crack.half_length
         ne = 2 * int(ne_half)
-        xe = np.linspace(-a, a, ne + 1)
+        xe = element_nodes(a, ne, node_distribution=node_distribution)
 
         # Source points (unknown DOFs)
         xg_s, wg_s = gauss_legendre(nq_src)
@@ -219,6 +235,10 @@ class DCESingleCrackStatic:
         xs = np.concatenate(xs_list)
         ws = np.concatenate(ws_list)
 
+        # Tip-weight for regularized unknown g(s)=b(s)*sqrt(a^2-s^2)
+        eps_tip = max(1e-12 * a, 1e-18)
+        tipw = 1.0 / np.sqrt(np.maximum(a * a - xs * xs, eps_tip))
+
         # Collocation points (equations) – choose different set
         xg_c, _ = gauss_legendre(nq_col)
         xc_list = []
@@ -232,15 +252,15 @@ class DCESingleCrackStatic:
         DX = xcol[:, None] - xs[None, :]
         tol = 1e-14 * a
         DX = np.where(np.abs(DX) < tol, np.sign(DX) * tol + tol, DX)
-        A = ws[None, :] / DX  # rectangular (n_eq x n_dof)
+        A = (ws * tipw)[None, :] / DX  # Nyström: b(s)=g(s)/sqrt(a^2-s^2)
 
         ts0, tn0 = self.applied_tractions_local()
         M = self.M()
         rhsI = (tn0 / M) * np.ones_like(xcol)
         rhsII = (-ts0 / M) * np.ones_like(xcol)
 
-        # Closure: Σ b_j w_j = 0
-        C = ws.reshape(1, -1)
+        # Closure: ∫ b(s) ds = 0  =>  Σ g_j * tipw_j * w_j = 0
+        C = (ws * tipw).reshape(1, -1)
 
         # Ridge (Tikhonov) by augmentation; keeps constraint unchanged
         if ridge and ridge > 0:
@@ -249,26 +269,41 @@ class DCESingleCrackStatic:
             rhsII_aug = np.concatenate([rhsII, np.zeros(A.shape[1])])
             bI = self._solve_kkt_lsq(A_aug, rhsI_aug, C)
             bII = self._solve_kkt_lsq(A_aug, rhsII_aug, C)
+
+            gI = bI
+            gII = bII
+            bI = gI * tipw
+            bII = gII * tipw
         else:
             bI = self._solve_kkt_lsq(A, rhsI, C)
             bII = self._solve_kkt_lsq(A, rhsII, C)
 
+        # Interpret solved DOFs as regularized g(s); recover physical b(s)=g(s)*tipw for plotting/stress.
+        gI = bI
+        gII = bII
+        bI = gI * tipw
+        bII = gII * tipw
+
         return dict(
             representation="delta_collocation",
+            node_distribution=str(node_distribution),
             ne_half=int(ne_half),
             xs=xs,
             ws=ws,
             xcol=xcol,
+            tipw=tipw,
+            gI=gI,
+            gII=gII,
             bI=bI,
             bII=bII,
             meta=dict(nq_src=int(nq_src), nq_col=int(nq_col), ridge=float(ridge)),
         )
 
-    def _solve_cheb_quad(self, ne_half: int, nq_col: int = 3, nq_src: int = 6, reg_g2: float = 0.0):
+    def _solve_cheb_quad(self, ne_half: int, *, node_distribution: str = "uniform", nq_col: int = 3, nq_src: int = 6, reg_g2: float = 0.0):
         # (Same as prior version; kept for continuity)
         a = self.crack.half_length
         ne = 2 * int(ne_half)
-        xe = np.linspace(-a, a, ne + 1)
+        xe = element_nodes(a, ne, node_distribution=node_distribution)
         xm = 0.5 * (xe[:-1] + xe[1:])
 
         xnodes = np.empty(2 * ne + 1, float)
@@ -370,6 +405,7 @@ class DCESingleCrackStatic:
 
         return dict(
             representation="cheb_quad",
+            node_distribution=str(node_distribution),
             ne_half=int(ne_half),
             xnodes=xnodes,
             qI=qI,
@@ -413,7 +449,7 @@ class DCESingleCrackStatic:
             xnodes = results["xnodes"]
             q = results["qI"] if mode.upper() == "I" else results["qII"]
             ne = 2 * results["ne_half"]
-            xe = np.linspace(-a, a, ne + 1)
+            xe = element_nodes(a, ne, node_distribution=node_distribution)
 
             eps = max(1e-12 * a, 1e-18)
             xx = np.clip(x, -a + eps, a - eps)
@@ -479,97 +515,6 @@ class DCESingleCrackStatic:
             return u - (alpha + beta * x)
 
         return x, enforce_end_zero(COD), enforce_end_zero(CSD)
-    def fit_sif_from_cod(
-        self,
-        results: dict,
-        *,
-        tip: str = "both",
-        r_min_factor: float = 2e-3,
-        r_max_factor: float = 2e-1,
-        n_fit: int = 60,
-        n_recon: int = 6000,
-    ):
-        """Estimate (K_I, K_II) by fitting near-tip COD/CSD to the LEFM square-root form.
-
-        For an infinite plate with a straight crack, the crack-surface relative displacements
-        satisfy, as r -> 0 along the crack line behind the tip:
-
-            COD(r) ≈ (kappa+1)/mu * K_I * sqrt(r/(2π))
-            CSD(r) ≈ (kappa+1)/mu * K_II * sqrt(r/(2π))
-
-        where mu is the shear modulus and kappa is the Kolosov constant.
-        We perform a least-squares fit of COD and CSD versus sqrt(r) on each tip and return
-        either a single-tip result or an average of both tips.
-
-        Parameters
-        ----------
-        tip:
-            "right", "left", or "both" (default). For "both", we fit each tip and average.
-        r_min_factor, r_max_factor:
-            Fit window r ∈ [r_min_factor*a, r_max_factor*a] (meters), with a = half crack length.
-        n_fit:
-            Number of samples used in the fit window (per tip).
-        n_recon:
-            Samples used to reconstruct COD/CSD from the solved Burgers density.
-        """
-        a = float(self.crack.half_length)
-        mu = float(self.material.mu)
-        kappa = float(self.material.kappa)
-
-        # Reconstruct COD/CSD on a dense grid (end-conditions enforced in reconstruct_cod_csd)
-        x, COD, CSD = self.reconstruct_cod_csd(results, n=int(n_recon))
-
-        def _fit_one(which: str):
-            which = which.lower()
-            if which == "right":
-                # r = a - x, for x close to +a (inside crack)
-                rmin = max(r_min_factor * a, 1e-12 * a)
-                rmax = max(r_max_factor * a, rmin * 5.0)
-                r = a - x
-            else:
-                # left tip: r = x + a, for x close to -a
-                rmin = max(r_min_factor * a, 1e-12 * a)
-                rmax = max(r_max_factor * a, rmin * 5.0)
-                r = x + a
-
-            mask = (r >= rmin) & (r <= rmax)
-            if mask.sum() < max(10, n_fit // 3):
-                raise ValueError("Not enough points in SIF fit window; increase n_recon or widen r-window.")
-
-            # Downsample uniformly within the window to n_fit points
-            idx = np.where(mask)[0]
-            if idx.size > n_fit:
-                pick = np.linspace(0, idx.size - 1, n_fit).round().astype(int)
-                idx = idx[pick]
-
-            rr = r[idx]
-            s = np.sqrt(rr)  # predictor
-            # Fit y = A*s with zero intercept
-            def _coef(y):
-                num = float(np.dot(s, y))
-                den = float(np.dot(s, s))
-                return num / den if den > 0 else 0.0
-
-            A_I = _coef(COD[idx])
-            A_II = _coef(CSD[idx])
-
-            KI = A_I * mu * math.sqrt(2.0 * math.pi) / (kappa + 1.0)
-            KII = A_II * mu * math.sqrt(2.0 * math.pi) / (kappa + 1.0)
-            return dict(tip=which, KI=KI, KII=KII, A_I=A_I, A_II=A_II, rmin=rmin, rmax=rmax)
-
-        if tip.lower() in ("right", "left"):
-            out = _fit_one(tip)
-            return out["KI"], out["KII"], out
-
-        right = _fit_one("right")
-        left = _fit_one("left")
-
-        # Average magnitudes; keep sign from mean
-        KI = 0.5 * (right["KI"] + left["KI"])
-        KII = 0.5 * (right["KII"] + left["KII"])
-        meta = dict(right=right, left=left)
-        return KI, KII, meta
-
 
     def evaluate_stress_field_local(self, X, Y, results: dict, add_remote: bool = True, nq_stress: int = 10):
         a = self.crack.half_length
@@ -578,7 +523,7 @@ class DCESingleCrackStatic:
         mu, nu = self.material.mu, self.material.nu
 
         ne = 2 * results.get("ne_half", 10)
-        xe = np.linspace(-a, a, ne + 1)
+        xe = element_nodes(a, ne, node_distribution=node_distribution)
         xg, wg = gauss_legendre(int(nq_stress))
 
         xs_list, ws_list = [], []
