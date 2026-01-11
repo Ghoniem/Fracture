@@ -231,3 +231,78 @@ def sih_normalized_F(alpha, sigma, rho=1.0, tip=+1):
     return (KI / Fden), (KII / Fden), c
 
 
+def cotterell_rice_K_circular_arc(alpha, a, sigma_xx, sigma_yy, sigma_xy):
+    """
+    Cotterell & Rice (1980), Section 3: exact KI, KII for a circular arc crack
+    under a uniform far-field stress state (sigma_xx, sigma_yy, sigma_xy).
+
+    Implements Eqs. (20) and (21) in:
+      B. Cotterell and J.R. Rice, "Slightly curved or kinked cracks",
+      Int. J. Fracture 16 (1980) 155–169.  (See Section 3, Eqs. 20–21.)
+
+    Parameters
+    ----------
+    alpha : float
+        Total included angle of the circular arc (radians).
+        (The equations use sin(alpha/2), cos(alpha/2).)
+    a : float
+        Radius parameter appearing in (pi*a)^(1/2) prefactor in Eqs. (20)-(21).
+        Units: length.
+    sigma_xx, sigma_yy, sigma_xy : float
+        Remote uniform stress components (same units as desired for K / sqrt(length)).
+
+    Returns
+    -------
+    KI, KII : floats
+        Mode I and Mode II stress intensity factors.
+
+    Notes
+    -----
+    - Uses the Cotterell–Rice corrected exact solution for the circular arc crack.
+    - Angle convention is that used in their Fig. 2 / Eqs. (20)-(21).
+    """
+    alpha = float(alpha)
+    a = float(a)
+    if a <= 0.0:
+        raise ValueError("a must be > 0.")
+    if not (0.0 < alpha < 2.0*np.pi):
+        raise ValueError("alpha should be in (0, 2*pi) radians for a proper arc.")
+
+    sh = np.sin(alpha/2.0)
+    ch = np.cos(alpha/2.0)
+
+    denom = 1.0 + sh**2
+
+    # Common bracket term in Eqs. (20)-(21):
+    # [(σyy+σxx)/2 - ((σyy-σxx)/2) sin^2(alpha/2) cos^2(alpha/2)]
+    common = 0.5*(sigma_yy + sigma_xx) - 0.5*(sigma_yy - sigma_xx)*(sh**2)*(ch**2)
+
+    pref = np.sqrt(np.pi * a)
+
+    # Eq. (20)
+    KI = pref * (
+        common * (ch/denom)
+        + 0.5*(sigma_yy - sigma_xx)*np.cos(3.0*alpha/2.0)
+        - sigma_xy*(np.sin(3.0*alpha/2.0) + sh**3)
+    )
+
+    # Eq. (21)
+    KII = pref * (
+        common * (sh/denom)
+        + 0.5*(sigma_yy - sigma_xx)*np.sin(3.0*alpha/2.0)
+        + sigma_xy*(np.cos(3.0*alpha/2.0) + ch*(sh**2))
+    )
+
+    return KI, KII
+
+def cotterell_rice_F_circular_arc(alpha, a, sigma_xx, sigma_yy, sigma_xy):
+    KI, KII = cotterell_rice_K_circular_arc(alpha, a, sigma_xx, sigma_yy, sigma_xy)
+    c = 2.0*a*np.sin(alpha/2.0)
+    Fden = 1.0 * np.sqrt(np.pi*(c/2.0))  # = sqrt(pi*c/2)
+    # If you want FI = KI / (sigma*sqrt(pi*c/2)), you must choose what "sigma" is
+    # for mixed loading; here we return the raw scaling with sqrt(pi*c/2).
+    return KI/Fden, KII/Fden, c
+
+
+
+
