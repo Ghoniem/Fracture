@@ -2,7 +2,7 @@
 from __future__ import annotations
 import math
 from pathlib import Path
-from typing import Dict, Sequence, Optional
+from typing import Dict, Sequence, Optional, Tuple
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -12,6 +12,7 @@ from .plot_opts import (
 )
 from .plot_smooth import moving_average_nan, resolve_smooth_window
 from .plot_reconstruct import reconstruct_cod_csd_parametrized_smoothed
+from .processor_PK import PKProcessor
 
 
 class DCEPlotterV4:
@@ -62,9 +63,18 @@ class DCEPlotterV4:
         use_panel_midpoints: bool = True,
         cod_smooth_window: int = 0,
         csd_smooth_window: int = 0,
-        junction_visual: str = "stitched",
-        show_junction_markers: bool = True,
     ):
+        """Plot deformed crack network using **jump/COD** kinematics (J), not DeltaJ ("B").
+
+        Rules enforced:
+          - Degree-1 vertices (free tips): plotted tip is closed (J=0 at the tip point).
+          - Degree>=2 vertices (junctions): all incident branches share a common jump vector J(v).
+            Faces are attached to the two endpoints of the junction jump segment using a **cyclic CCW** rule:
+              *the face on the CCW-normal side of the outgoing tangent connects to the START point*.
+        """
+
+        pk = PKProcessor(self.res)
+
         ne_half_eff = int(getattr(self.res, "sol", {}).get("ne_half", 0) or 0)
         if ne_half_eff <= 0:
             ne_half_eff = 10
@@ -74,120 +84,178 @@ class DCEPlotterV4:
 
         V = self.calc.network.vertices
         E = self.calc.network.edges
-        s = 1e3 if units.lower() == "mm" else 1.0
+
+        deg = pk.degree_map()
+        # Only parametrized option has a reliable polyline->vertex mapping for J(v).
+        Jv_map = pk.junction_J_map() if getattr(self.res, "is_parametrized", lambda: False)() else {}
+
+        sxy = 1e3 if units.lower() == "mm" else 1.0
 
         fig, ax = plt.subplots(figsize=(7, 7))
         ax.set_title(f"Deformed Crack Network (scale={scale:.0e})")
 
-        colors = plt.rcParams["axes.prop_cycle"].by_key().get("color", [])
-        if not colors:
-            colors = ["C0", "C1", "C2", "C3", "C4", "C5"]
+        colors = plt.rcParams["axes.prop_cycle"].by_key().get("color", []) or ["C0", "C1", "C2", "C3", "C4", "C5"]
 
-        junction_visual = str(junction_visual).lower().strip()
-        if junction_visual not in ("stitched", "gap"):
-            junction_visual = "stitched"
+        def _nearest_end_is_start(xy: np.ndarray, p: np.ndarray) -> bool:
+            xy = np.asarray(xy, float)
+            if xy.ndim != 2 or xy.shape[0] < 2:
+                return True
+            d0 = float(np.hypot(*(xy[0, :] - p)))
+            d1 = float(np.hypot(*(xy[-1, :] - p)))
+            return d0 <= d1
+
+        def _attach_tip_point(U: np.ndarray, L: np.ndarray, p: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+            # Attach p to the nearest end of each face polyline
+            if _nearest_end_is_start(U, p):
+                U = np.vstack([p.reshape(1, 2), U])
+            else:
+                U = np.vstack([U, p.reshape(1, 2)])
+            if _nearest_end_is_start(L, p):
+                L = np.vstack([p.reshape(1, 2), L])
+            else:
+                L = np.vstack([L, p.reshape(1, 2)])
+            return U, L
+
+        def _ensure_U_is_left_face(U: np.ndarray, L: np.ndarray, p: np.ndarray, t_out: np.ndarray) -> tuple[np.ndarray, np.ndarray, bool]:
+            """Ensure U is the CCW-left face at the junction end.
+
+            Returns (U,L,U_start) where U_start indicates whether the junction end is the START of the arrays.
+            """
+            U = np.asarray(U, float)
+            L = np.asarray(L, float)
+            p = np.asarray(p, float).reshape(2,)
+            t_out = np.asarray(t_out, float).reshape(2,)
+            nt = float(np.hypot(t_out[0], t_out[1]))
+            if nt <= 0:
+                return U, L, True
+            t_out = t_out / nt
+            n_left = np.array([-t_out[1], t_out[0]], float)
+
+            U_start = _nearest_end_is_start(U, p)
+            L_start = _nearest_end_is_start(L, p)
+            if U_start != L_start:
+                U_start = True
+
+            d_sep = (U[0, :] - L[0, :]) if U_start else (U[-1, :] - L[-1, :])
+            if float(np.dot(d_sep, n_left)) < 0.0:
+                U, L = L, U
+            return U, L, U_start
+
+        def _attach_junction_endpoints_cyclic(
+            U: np.ndarray,
+            L: np.ndarray,
+            p: np.ndarray,
+            t_out: np.ndarray,
+            Jv: np.ndarray,
+        ) -> tuple[np.ndarray, np.ndarray]:
+            """Attach junction endpoints using the cyclic CCW rule.
+
+            Define junction jump segment endpoints:
+              p_start = p + 0.5*Jv*scale
+              p_end   = p - 0.5*Jv*scale
+
+            Rule:
+              - the CCW-left face (relative to outgoing tangent) connects to p_start
+              - the other face connects to p_end
+            """
+            U, L, U_start = _ensure_U_is_left_face(U, L, p, t_out)
+            Jv = np.asarray(Jv, float).reshape(2,)
+            p = np.asarray(p, float).reshape(2,)
+
+            p_start = p + 0.5 * Jv * float(scale)
+            p_end = p - 0.5 * Jv * float(scale)
+
+            if U_start:
+                U = np.vstack([p_start.reshape(1, 2), U])
+                L = np.vstack([p_end.reshape(1, 2), L])
+            else:
+                U = np.vstack([U, p_start.reshape(1, 2)])
+                L = np.vstack([L, p_end.reshape(1, 2)])
+            return U, L
 
         for edge_idx, edge in enumerate(E):
             v0 = next(v for v in V if int(v.id) == int(edge.v0))
             v1 = next(v for v in V if int(v.id) == int(edge.v1))
-            p0 = np.array([float(v0.x), float(v0.y)])
-            p1 = np.array([float(v1.x), float(v1.y)])
-            c = 0.5 * (p0 + p1)
-            t = p1 - p0
-            L = float(np.hypot(t[0], t[1]))
-            a = 0.5 * L
-            if a <= 0:
-                continue
-            R = rot_from_tangent(t)
+            p0 = np.array([float(v0.x), float(v0.y)], float)
+            p1 = np.array([float(v1.x), float(v1.y)], float)
 
-            if (
-                bool(use_panel_midpoints)
-                and show_faces
-                and hasattr(self.res, "crack_face_coords_panel_midpoints")
-            ):
-                try:
-                    xyU, xyL, extra = self.res.crack_face_coords_panel_midpoints(
-                        edge_index=int(edge_idx),
-                        scale=float(scale),
-                        enforce_global_tip_zero=True,
-                    )
-                    xyU = np.asarray(xyU, float)
-                    xyL = np.asarray(xyL, float)
-                    if xyU.ndim == 2 and xyU.shape[1] == 2 and xyU.shape[0] >= 1:
-                        pU0 = np.asarray(extra.get("xyU0", p0), float).reshape(2,)
-                        pL0 = np.asarray(extra.get("xyL0", p0), float).reshape(2,)
-                        pU1 = np.asarray(extra.get("xyU1", p1), float).reshape(2,)
-                        pL1 = np.asarray(extra.get("xyL1", p1), float).reshape(2,)
+            v0_id = int(edge.v0)
+            v1_id = int(edge.v1)
 
-                        if junction_visual == "stitched":
-                            # Traditional: include vertex points so faces meet exactly at the junction.
-                            xyU = np.vstack([pU0.reshape(1, 2), xyU, pU1.reshape(1, 2)])
-                            xyL = np.vstack([pL0.reshape(1, 2), xyL, pL1.reshape(1, 2)])
+            # Gauge choice for reconstruction (plotting only):
+            # We want **closed tips** (J_tip -> 0) for any degree-1 endpoint.
+            # It is safe to apply a tip-zero gauge for *any* edge that has at least one free tip,
+            # because the junction endpoint is later overridden/attached using the common J(v).
+            enforce_gauge = (deg.get(v0_id, 0) == 1) or (deg.get(v1_id, 0) == 1)
+
+            P, J = pk.jump_along_edge(
+                edge_index=int(edge_idx),
+                n_theta=int(max(400, n_theta)),
+                enforce_global_tip_zero=bool(enforce_gauge),
+                cod_window_panels=int(cod_win),
+                csd_window_panels=int(csd_win),
+            )
+
+            U = P + 0.5 * J * float(scale)
+            Lw = P - 0.5 * J * float(scale)
+
+            # Apply endpoint rules
+            for vid, p, tag in ((v0_id, p0, "start"), (v1_id, p1, "end")):
+                d = int(deg.get(int(vid), 0))
+                if d == 1:
+
+                    # Enforce a *closed* tip in the plotted geometry.
+                    #
+                    # Simply appending the vertex point can create an unphysical triangular "wedge"
+                    # when the last reconstructed point has a small but nonzero jump (J_tip ~ 1e-6).
+                    # Instead, we *overwrite* the nearest end-point on BOTH faces so that:
+                    #   U_tip == L_tip == p_tip
+                    # which guarantees COD/J -> 0 exactly at the drawn tip.
+                    mid = 0.5 * (U + Lw)
+                    tip_is_start = _nearest_end_is_start(mid, p)
+
+                    # Force exact closure at the tip point.
+                    if tip_is_start:
+                        U[0, :] = p
+                        Lw[0, :] = p
+                    else:
+                        U[-1, :] = p
+                        Lw[-1, :] = p
+
+                    # Optional (plotting-only) tip taper:
+                    # Even with a correct solver, the last *interior* sample may have a small residual
+                    # J_tip (~1e-6), which becomes visually prominent after scaling. To avoid the
+                    # persistent "wedge" artifact at degree-1 tips, we smoothly ramp the opening
+                    # from zero at the tip to the reconstructed value over a few samples.
+                    npts = int(min(len(U), len(Lw)))
+                    k_tip = int(min(25, max(4, round(0.01 * npts))))
+                    if npts >= k_tip + 2:
+                        if tip_is_start:
+                            idxs = np.arange(0, k_tip)
                         else:
-                            # Diagnostic visualization: do NOT force faces to coincide at the vertex.
-                            # Instead, draw short stubs from the vertex face points to the first/last midpoints.
-                            # This makes the junction opening visible even under cyclic stitching conventions.
-                            if show_junction_markers and xyU.shape[0] >= 1:
-                                ax.plot([pU0[0] * s, xyU[0, 0] * s], [pU0[1] * s, xyU[0, 1] * s], lw=1.5, color=colors[edge_idx % len(colors)])
-                                ax.plot([pL0[0] * s, xyL[0, 0] * s], [pL0[1] * s, xyL[0, 1] * s], lw=1.5, color=colors[edge_idx % len(colors)])
-                                ax.plot([xyU[-1, 0] * s, pU1[0] * s], [xyU[-1, 1] * s, pU1[1] * s], lw=1.5, color=colors[edge_idx % len(colors)])
-                                ax.plot([xyL[-1, 0] * s, pL1[0] * s], [xyL[-1, 1] * s, pL1[1] * s], lw=1.5, color=colors[edge_idx % len(colors)])
-                    if xyU.ndim == 2 and xyU.shape[1] == 2 and xyU.shape[0] >= 2:
-                        ax.plot(xyU[:, 0] * s, xyU[:, 1] * s, lw=1.5, color=colors[edge_idx % len(colors)])
-                        ax.plot(xyL[:, 0] * s, xyL[:, 1] * s, lw=1.5, color=colors[edge_idx % len(colors)])
-                        ax.plot([p0[0] * s, p1[0] * s], [p0[1] * s, p1[1] * s], ls=":", lw=1.0, color="k", alpha=0.6)
-                        continue
-                except Exception:
-                    pass
+                            idxs = np.arange(npts - k_tip, npts)
+                        # alpha=0 at the tip, alpha=1 at the k_tip-1 point
+                        alpha = np.linspace(0.0, 1.0, len(idxs)).reshape(-1, 1)
+                        m = mid[idxs, :]
+                        U[idxs, :] = m + alpha * (U[idxs, :] - m)
+                        Lw[idxs, :] = m + alpha * (Lw[idxs, :] - m)
 
-            if getattr(self.res, "is_parametrized", lambda: False)():
-                n_theta_eff = int(max(int(n_theta), 8000))
-                x, COD, CSD = reconstruct_cod_csd_parametrized_smoothed(
-                    self.res,
-                    edge_index=int(edge_idx),
-                    n_pts=n_theta_eff,
-                    enforce_global_tip_zero=True,
-                    cod_window_panels=int(cod_win),
-                    csd_window_panels=int(csd_win),
-                )
-            else:
-                edge_res = self.res.edge(int(edge_idx))
-                x, COD, CSD = edge_res.reconstruct_cod_csd(n_theta=int(n_theta), enforce_tip_zero=True)
+                elif d >= 2:
+                    Jv = Jv_map.get(int(vid), None)
+                    if Jv is None:
+                        # Fallback: use nearest end separation (already scaled); convert back to unscaled jump
+                        Jv = (U[0, :] - Lw[0, :]) / float(scale) if _nearest_end_is_start(U, p) else (U[-1, :] - Lw[-1, :]) / float(scale)
+                    # outgoing tangent from junction along this edge
+                    t_out = (p1 - p0) if tag == "start" else (p0 - p1)
+                    U, Lw = _attach_junction_endpoints_cyclic(U, Lw, p, t_out, Jv)
 
-            x = np.asarray(x, float)
-            COD = np.asarray(COD, float)
-            CSD = np.asarray(CSD, float)
-
-            if not getattr(self.res, "is_parametrized", lambda: False)():
-                if int(cod_win) and int(cod_win) > 1:
-                    COD = moving_average_nan(COD, int(cod_win))
-                if int(csd_win) and int(csd_win) > 1:
-                    CSD = moving_average_nan(CSD, int(csd_win))
-
-            X0 = x
-            Y0 = np.zeros_like(x)
+            ax.plot([p0[0] * sxy, p1[0] * sxy], [p0[1] * sxy, p1[1] * sxy], ls=":", lw=1.0, color="k", alpha=0.6)
 
             if show_faces:
-                du = 0.5 * COD
-                dt = 0.5 * CSD
-                dt_s = dt * float(scale)
-                du_s = du * float(scale)
-
-                Yup = du_s
-                Ylo = -du_s
-                Xup = X0 + dt_s
-                Xlo = X0 - dt_s
-
-                Pup = (R @ np.vstack([Xup, Yup])) + c.reshape(2, 1)
-                Plo = (R @ np.vstack([Xlo, Ylo])) + c.reshape(2, 1)
-
-                ax.plot(Pup[0] * s, Pup[1] * s, lw=1.5, color=colors[edge_idx % len(colors)])
-                ax.plot(Plo[0] * s, Plo[1] * s, lw=1.5, color=colors[edge_idx % len(colors)])
+                ax.plot(U[:, 0] * sxy, U[:, 1] * sxy, lw=1.5, color=colors[edge_idx % len(colors)])
+                ax.plot(Lw[:, 0] * sxy, Lw[:, 1] * sxy, lw=1.5, color=colors[edge_idx % len(colors)])
             else:
-                P0 = (R @ np.vstack([X0, Y0])) + c.reshape(2, 1)
-                ax.plot(P0[0] * s, P0[1] * s, lw=2.0, color=colors[edge_idx % len(colors)])
-
-            ax.plot([p0[0] * s, p1[0] * s], [p0[1] * s, p1[1] * s], ls=":", lw=1.0, color="k", alpha=0.6)
+                ax.plot(P[:, 0] * sxy, P[:, 1] * sxy, lw=2.0, color=colors[edge_idx % len(colors)])
 
         ax.set_xlabel(f"x [{units}]")
         ax.set_ylabel(f"y [{units}]")

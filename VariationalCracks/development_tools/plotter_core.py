@@ -12,7 +12,6 @@ from .plot_opts import (
 )
 from .plot_smooth import moving_average_nan, resolve_smooth_window
 from .plot_reconstruct import reconstruct_cod_csd_parametrized_smoothed
-from .processor_PK import PKProcessor
 
 
 class DCEPlotterV4:
@@ -64,21 +63,6 @@ class DCEPlotterV4:
         cod_smooth_window: int = 0,
         csd_smooth_window: int = 0,
     ):
-        """Plot deformed crack network using *geometric* jump (COD/CSD) only.
-
-        Policy (per your request)
-        ------------------------
-        - No plotter-level enforcement of tip closure (no endpoint clamping, no affine ramps).
-        - Geometry is built strictly from reconstructed COD/CSD mapped to a global jump vector.
-        - Junctions (degree>=2) are attached using the common junction jump J(v) when available.
-
-        This function relies on :class:`processor_PK.PKProcessor` for a consistent mapping between
-        local COD/CSD and global coordinates, particularly for parametrized cracks where the
-        polyline segment direction may differ from the raw network edge ordering.
-        """
-
-        pk = PKProcessor(self.res)
-
         ne_half_eff = int(getattr(self.res, "sol", {}).get("ne_half", 0) or 0)
         if ne_half_eff <= 0:
             ne_half_eff = 10
@@ -88,131 +72,104 @@ class DCEPlotterV4:
 
         V = self.calc.network.vertices
         E = self.calc.network.edges
-
-        deg = pk.degree_map()
-        Jv_map = pk.junction_J_map() if getattr(self.res, "is_parametrized", lambda: False)() else {}
-
-        sxy = 1e3 if units.lower() == "mm" else 1.0
+        s = 1e3 if units.lower() == "mm" else 1.0
 
         fig, ax = plt.subplots(figsize=(7, 7))
         ax.set_title(f"Deformed Crack Network (scale={scale:.0e})")
 
-        colors = plt.rcParams["axes.prop_cycle"].by_key().get("color", []) or ["C0", "C1", "C2", "C3", "C4", "C5"]
-
-        def _nearest_end_is_start(xy: np.ndarray, p: np.ndarray) -> bool:
-            xy = np.asarray(xy, float)
-            if xy.ndim != 2 or xy.shape[0] < 2:
-                return True
-            d0 = float(np.hypot(*(xy[0, :] - p)))
-            d1 = float(np.hypot(*(xy[-1, :] - p)))
-            return d0 <= d1
-
-        def _maybe_swap_faces(U: np.ndarray, L: np.ndarray, n_hat: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-            """Swap U/L so the mean separation points along +n_hat."""
-            U = np.asarray(U, float)
-            L = np.asarray(L, float)
-            if U.ndim != 2 or L.ndim != 2 or U.shape[1] != 2 or L.shape[1] != 2:
-                return U, L
-            m = int(min(U.shape[0], L.shape[0]))
-            if m < 3:
-                return U, L
-            i0 = m // 5
-            i1 = m - m // 5
-            if i1 <= i0 + 1:
-                i0, i1 = 0, m
-            d = np.mean(U[i0:i1, :] - L[i0:i1, :], axis=0)
-            if float(np.dot(d, n_hat)) < 0.0:
-                return L, U
-            return U, L
-
-        def _attach_junction_endpoints(U: np.ndarray, L: np.ndarray, p: np.ndarray, Jv: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-            """Attach the junction jump segment endpoints to the face endpoints.
-
-            Uses a stable geometric pairing evaluated at the junction end of the polylines.
-            """
-            U = np.asarray(U, float)
-            L = np.asarray(L, float)
-            p = np.asarray(p, float).reshape(2,)
-            Jv = np.asarray(Jv, float).reshape(2,)
-
-            p_plus = p + 0.5 * Jv * float(scale)
-            p_minus = p - 0.5 * Jv * float(scale)
-
-            mid = 0.5 * (U + L)
-            end_is_start = _nearest_end_is_start(mid, p)
-            U_end = U[0, :] if end_is_start else U[-1, :]
-            L_end = L[0, :] if end_is_start else L[-1, :]
-
-            c1 = float(np.hypot(*(U_end - p_plus))) + float(np.hypot(*(L_end - p_minus)))
-            c2 = float(np.hypot(*(U_end - p_minus))) + float(np.hypot(*(L_end - p_plus)))
-            if c1 <= c2:
-                pU, pL = p_plus, p_minus
-            else:
-                pU, pL = p_minus, p_plus
-
-            if end_is_start:
-                U = np.vstack([pU.reshape(1, 2), U])
-                L = np.vstack([pL.reshape(1, 2), L])
-            else:
-                U = np.vstack([U, pU.reshape(1, 2)])
-                L = np.vstack([L, pL.reshape(1, 2)])
-            return U, L
+        colors = plt.rcParams["axes.prop_cycle"].by_key().get("color", [])
+        if not colors:
+            colors = ["C0", "C1", "C2", "C3", "C4", "C5"]
 
         for edge_idx, edge in enumerate(E):
             v0 = next(v for v in V if int(v.id) == int(edge.v0))
             v1 = next(v for v in V if int(v.id) == int(edge.v1))
-            p0 = np.array([float(v0.x), float(v0.y)], float)
-            p1 = np.array([float(v1.x), float(v1.y)], float)
-
-            v0_id = int(edge.v0)
-            v1_id = int(edge.v1)
-
-            # Plot geometry from *geometric* jump only (COD/CSD -> J).
-            # We do not clamp/taper in the plotter. However, the jump reconstruction
-            # is defined up to an additive constant (integration constant). For any
-            # edge that has a degree-1 endpoint, we fix that constant by requiring
-            # J=0 at the physical tip point. This is a gauge choice for reconstruction,
-            # not a solver modification.
-            tip_point = None
-            if int(deg.get(v0_id, 0)) == 1:
-                tip_point = p0
-            elif int(deg.get(v1_id, 0)) == 1:
-                tip_point = p1
-
-            P, J = pk.jump_along_edge(
-                edge_index=int(edge_idx),
-                n_theta=int(max(400, n_theta)),
-                enforce_global_tip_zero=False,
-                tip_point=tip_point,
-                cod_window_panels=int(cod_win),
-                csd_window_panels=int(csd_win),
-            )
-
-            U = P + 0.5 * J * float(scale)
-            Lw = P - 0.5 * J * float(scale)
-
-            # Visual consistency: choose a deterministic U/L ordering by the geometric normal.
+            p0 = np.array([float(v0.x), float(v0.y)])
+            p1 = np.array([float(v1.x), float(v1.y)])
+            c = 0.5 * (p0 + p1)
             t = p1 - p0
-            Lt = float(np.hypot(t[0], t[1]))
-            if Lt > 0:
-                t_hat = t / Lt
-                n_hat = np.array([-t_hat[1], t_hat[0]], float)
-                U, Lw = _maybe_swap_faces(U, Lw, n_hat)
+            L = float(np.hypot(t[0], t[1]))
+            a = 0.5 * L
+            if a <= 0:
+                continue
+            R = rot_from_tangent(t)
 
-            # Junction attachments (degree>=2) using common J(v) where available.
-            for vid, p in ((v0_id, p0), (v1_id, p1)):
-                if int(deg.get(int(vid), 0)) >= 2:
-                    Jv = Jv_map.get(int(vid), None)
-                    if Jv is not None:
-                        U, Lw = _attach_junction_endpoints(U, Lw, p, Jv)
+            if (
+                bool(use_panel_midpoints)
+                and show_faces
+                and hasattr(self.res, "crack_face_coords_panel_midpoints")
+            ):
+                try:
+                    xyU, xyL, extra = self.res.crack_face_coords_panel_midpoints(
+                        edge_index=int(edge_idx),
+                        scale=float(scale),
+                        enforce_global_tip_zero=True,
+                    )
+                    xyU = np.asarray(xyU, float)
+                    xyL = np.asarray(xyL, float)
+                    if xyU.ndim == 2 and xyU.shape[1] == 2 and xyU.shape[0] >= 1:
+                        pU0 = np.asarray(extra.get("xyU0", p0), float)
+                        pL0 = np.asarray(extra.get("xyL0", p0), float)
+                        pU1 = np.asarray(extra.get("xyU1", p1), float)
+                        pL1 = np.asarray(extra.get("xyL1", p1), float)
+                        xyU = np.vstack([pU0.reshape(1, 2), xyU, pU1.reshape(1, 2)])
+                        xyL = np.vstack([pL0.reshape(1, 2), xyL, pL1.reshape(1, 2)])
+                    if xyU.ndim == 2 and xyU.shape[1] == 2 and xyU.shape[0] >= 2:
+                        ax.plot(xyU[:, 0] * s, xyU[:, 1] * s, lw=1.5, color=colors[edge_idx % len(colors)])
+                        ax.plot(xyL[:, 0] * s, xyL[:, 1] * s, lw=1.5, color=colors[edge_idx % len(colors)])
+                        ax.plot([p0[0] * s, p1[0] * s], [p0[1] * s, p1[1] * s], ls=":", lw=1.0, color="k", alpha=0.6)
+                        continue
+                except Exception:
+                    pass
+
+            if getattr(self.res, "is_parametrized", lambda: False)():
+                n_theta_eff = int(max(int(n_theta), 8000))
+                x, COD, CSD = reconstruct_cod_csd_parametrized_smoothed(
+                    self.res,
+                    edge_index=int(edge_idx),
+                    n_pts=n_theta_eff,
+                    enforce_global_tip_zero=True,
+                    cod_window_panels=int(cod_win),
+                    csd_window_panels=int(csd_win),
+                )
+            else:
+                edge_res = self.res.edge(int(edge_idx))
+                x, COD, CSD = edge_res.reconstruct_cod_csd(n_theta=int(n_theta), enforce_tip_zero=True)
+
+            x = np.asarray(x, float)
+            COD = np.asarray(COD, float)
+            CSD = np.asarray(CSD, float)
+
+            if not getattr(self.res, "is_parametrized", lambda: False)():
+                if int(cod_win) and int(cod_win) > 1:
+                    COD = moving_average_nan(COD, int(cod_win))
+                if int(csd_win) and int(csd_win) > 1:
+                    CSD = moving_average_nan(CSD, int(csd_win))
+
+            X0 = x
+            Y0 = np.zeros_like(x)
 
             if show_faces:
-                ax.plot(U[:, 0] * sxy, U[:, 1] * sxy, lw=1.5, color=colors[edge_idx % len(colors)])
-                ax.plot(Lw[:, 0] * sxy, Lw[:, 1] * sxy, lw=1.5, color=colors[edge_idx % len(colors)])
-            else:
-                ax.plot(P[:, 0] * sxy, P[:, 1] * sxy, lw=2.0, color=colors[edge_idx % len(colors)])
+                du = 0.5 * COD
+                dt = 0.5 * CSD
+                dt_s = dt * float(scale)
+                du_s = du * float(scale)
 
-            ax.plot([p0[0] * sxy, p1[0] * sxy], [p0[1] * sxy, p1[1] * sxy], ls=":", lw=1.0, color="k", alpha=0.6)
+                Yup = du_s
+                Ylo = -du_s
+                Xup = X0 + dt_s
+                Xlo = X0 - dt_s
+
+                Pup = (R @ np.vstack([Xup, Yup])) + c.reshape(2, 1)
+                Plo = (R @ np.vstack([Xlo, Ylo])) + c.reshape(2, 1)
+
+                ax.plot(Pup[0] * s, Pup[1] * s, lw=1.5, color=colors[edge_idx % len(colors)])
+                ax.plot(Plo[0] * s, Plo[1] * s, lw=1.5, color=colors[edge_idx % len(colors)])
+            else:
+                P0 = (R @ np.vstack([X0, Y0])) + c.reshape(2, 1)
+                ax.plot(P0[0] * s, P0[1] * s, lw=2.0, color=colors[edge_idx % len(colors)])
+
+            ax.plot([p0[0] * s, p1[0] * s], [p0[1] * s, p1[1] * s], ls=":", lw=1.0, color="k", alpha=0.6)
 
         ax.set_xlabel(f"x [{units}]")
         ax.set_ylabel(f"y [{units}]")

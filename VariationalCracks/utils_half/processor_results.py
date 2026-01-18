@@ -1,19 +1,5 @@
-from __future__ import annotations
-
-
-"""
-Results object for v4 polyline-panel solver.
-
-PATCH VERSION: v6
-- Adds module self-identification and optional debug info for tip-closure.
-"""
-
-VERSION = "v6"
-
-def print_version():
-    return VERSION
-
 """Results object for v4 polyline-panel solver."""
+from __future__ import annotations
 import numpy as np
 import math
 
@@ -24,64 +10,92 @@ class DCEResultsNetworkV4:
     def __init__(self, calc, sol: dict):
         self.calc = calc
         self.sol = sol
-        self._vertex_degree_cache = None
 
-    # -------------------------
-    # Small helpers
-    # -------------------------
-    def _build_vertex_degree_cache(self):
-        """Build (once) a dict: vertex_id -> degree, based on network edges."""
-        deg = {}
-        for e in getattr(self.calc.network, 'edges', []):
-            v0 = int(getattr(e, 'v0'))
-            v1 = int(getattr(e, 'v1'))
-            deg[v0] = deg.get(v0, 0) + 1
-            deg[v1] = deg.get(v1, 0) + 1
-        self._vertex_degree_cache = deg
-
-    def _vertex_degree(self, vid: int) -> int:
-        if self._vertex_degree_cache is None:
-            self._build_vertex_degree_cache()
-        return int(self._vertex_degree_cache.get(int(vid), 0))
-
-    def _polyline_has_two_leaf_tips(self, path_vids) -> bool:
-        """Return True if the polyline endpoints look like physical tips (degree==1)."""
-        if not path_vids or len(path_vids) < 2:
-            return False
-        v0 = int(path_vids[0])
-        v1 = int(path_vids[-1])
-        return (self._vertex_degree(v0) == 1) and (self._vertex_degree(v1) == 1)
-
-
-    def _polyline_reference_s(self, path_vids, s_vert):
-        """Choose a gauge reference s-location for non-leaf polylines.
-
-        For junction-containing polylines the absolute jump field is only defined
-        up to an additive constant (a rigid relative shift of the two faces).
-        For visualization (and for consistent vertex stitching), we anchor the
-        jump so that it is zero at a junction-like vertex when available.
-
-        Returns: (s_ref, vid_ref) or (None, None) if no reference is found.
-        """
-        if path_vids is None or len(path_vids) == 0:
-            return None, None
-        # Prefer the first junction-like vertex along the path
-        for i, vid in enumerate(path_vids):
-            if self._vertex_degree(int(vid)) >= 3:
-                try:
-                    return float(s_vert[i]), int(vid)
-                except Exception:
-                    return None, None
-        # Fallback: anchor at the first endpoint
-        try:
-            return float(s_vert[0]), int(path_vids[0])
-        except Exception:
-            return None, None
     # -------------------------
     # Compatibility hooks used by plotter
     # -------------------------
     def is_parametrized(self) -> bool:
         return str(self.sol.get("solver_option", "")).lower() == "parametrized_crack"
+
+
+    # -------------------------
+    # Half-crack face parity (robust upper/lower labeling across networks)
+    # -------------------------
+    def _half_face_parity(self) -> dict[int, int]:
+        """Return a dict pid -> parity (+1 or -1) to make face labels consistent across a connected crack set.
+
+        Rule: for two polylines sharing a vertex v,
+          - if one is incident as START at v and the other as END at v, they can keep the same parity
+          - if both are START at v or both are END at v, parity must flip
+
+        This yields a consistent 'left-side surface' labeling across chains and junctioned networks,
+        avoiding upper/lower swapping at kinks and junctions.
+        """
+        cache = getattr(self, "_parity_cache", None)
+        if isinstance(cache, dict) and cache:
+            return cache
+
+        polylines = list(self.sol.get("parametrized_polylines", []))
+        if not polylines:
+            self._parity_cache = {}
+            return self._parity_cache
+
+        # Build pid endpoints
+        pid_start = {}
+        pid_end = {}
+        for pid, meta in enumerate(polylines):
+            vids = [int(v) for v in meta.get("path_vertex_ids", [])]
+            if len(vids) < 2:
+                continue
+            pid_start[int(pid)] = int(vids[0])
+            pid_end[int(pid)] = int(vids[-1])
+
+        # Vertex incidence: v -> [(pid, 'start'/'end')]
+        v_inc = {}
+        for pid, vs in pid_start.items():
+            v_inc.setdefault(int(vs), []).append((int(pid), "start"))
+        for pid, ve in pid_end.items():
+            v_inc.setdefault(int(ve), []).append((int(pid), "end"))
+
+        parity = {pid: 0 for pid in pid_start.keys()}
+
+        # BFS on each connected component in pid-graph
+        for pid0 in list(parity.keys()):
+            if parity[pid0] != 0:
+                continue
+            parity[pid0] = +1
+            stack = [pid0]
+            while stack:
+                pid_a = stack.pop()
+                vs = pid_start.get(pid_a, None)
+                ve = pid_end.get(pid_a, None)
+                for v in (vs, ve):
+                    if v is None:
+                        continue
+                    items = v_inc.get(int(v), [])
+                    # Determine incidence type of pid_a at v
+                    typ_a = "start" if v == pid_start.get(pid_a) else "end"
+                    for (pid_b, typ_b) in items:
+                        if pid_b == pid_a:
+                            continue
+                        # relation: same parity if incidence differs; flip if same
+                        rel = +1 if typ_a != typ_b else -1
+                        want = parity[pid_a] * rel
+                        if parity.get(pid_b, 0) == 0:
+                            parity[pid_b] = want
+                            stack.append(pid_b)
+                        else:
+                            # If conflict, keep existing (odd cycles can appear at true junctions);
+                            # plotting will still be consistent locally.
+                            pass
+
+        # Replace zeros (if any) with +1
+        for pid in list(parity.keys()):
+            if parity[pid] == 0:
+                parity[pid] = +1
+
+        self._parity_cache = parity
+        return parity
 
     def reconstruct_cod_csd_parametrized(
         self,
@@ -184,65 +198,12 @@ class DCEResultsNetworkV4:
         for i in range(Np):
             dJ = -(bII[i] * t_use[i] + bI[i] * n_use[i]) * float(ds[i])
             J_nodes[i + 1] = J_nodes[i] + dJ
+
         if enforce_global_tip_zero and Ltot > 0:
-            # Tip closure should be applied at physical crack tips (degree==1).
-            # For a polyline that starts at a junction (deg>=3) and ends at a leaf tip,
-            # enforce J(L)=0 while keeping J(0) unchanged.
-            if path_vids and len(path_vids) >= 2:
-                deg0 = self._vertex_degree(int(path_vids[0]))
-                deg1 = self._vertex_degree(int(path_vids[-1]))
-            else:
-                deg0 = deg1 = 0
-
-            if deg0 == 1 and deg1 == 1:
-                # Two-tip crack: enforce J(0)=0 and J(L)=0 via a linear ramp.
-                J0 = J_nodes[0].copy()
-                JL = J_nodes[-1].copy()
-                if (np.linalg.norm(J0) > 0) or (np.linalg.norm(JL) > 0):
-                    alpha = (s_nodes / float(Ltot)).reshape(-1, 1)
-                    J_nodes = J_nodes - (1.0 - alpha) * J0.reshape(1, 2) - alpha * JL.reshape(1, 2)
-
-            elif deg0 != 1 and deg1 == 1:
-                # Junction/interior -> physical tip: enforce J(L)=0, keep J(0) unchanged.
-                JL = J_nodes[-1].copy()
-                if np.linalg.norm(JL) > 0:
-                    alpha = (s_nodes / float(Ltot)).reshape(-1, 1)
-                    J_nodes = J_nodes - alpha * JL.reshape(1, 2)
-
-            elif deg0 == 1 and deg1 != 1:
-                # Physical tip -> junction/interior: enforce J(0)=0, keep J(L) unchanged.
-                J0 = J_nodes[0].copy()
-                if np.linalg.norm(J0) > 0:
-                    alpha = (s_nodes / float(Ltot)).reshape(-1, 1)
-                    J_nodes = J_nodes - (1.0 - alpha) * J0.reshape(1, 2)
-
-
-        # Gauge choice:
-        # For polylines with at least one physical tip (degree==1), the natural gauge is
-        # the tip-closure enforcement above (J=0 at the physical tip). Do NOT additionally
-        # subtract a constant, as that would generally destroy the tip-closure.
-        # Only apply an additive-gauge anchor for polylines that have *no* leaf tips
-        # (e.g., closed paths or interior-to-interior paths).
-        if Ltot > 0 and (not self._polyline_has_two_leaf_tips(path_vids)):
-            if path_vids and len(path_vids) >= 2:
-                deg0 = self._vertex_degree(int(path_vids[0]))
-                deg1 = self._vertex_degree(int(path_vids[-1]))
-            else:
-                deg0 = deg1 = 0
-
-            if (deg0 != 1) and (deg1 != 1):
-                s_ref, _vid_ref = self._polyline_reference_s(path_vids, s_vert)
-                if s_ref is not None:
-                    s_ref = float(np.clip(s_ref, float(s_nodes[0]), float(s_nodes[-1])))
-                    j_ref = int(np.searchsorted(s_nodes, s_ref, side="right") - 1)
-                    j_ref = max(0, min(j_ref, len(s_nodes) - 2))
-                    sL = float(s_nodes[j_ref]); sR = float(s_nodes[j_ref + 1])
-                    if sR > sL:
-                        w_ref = (s_ref - sL) / (sR - sL)
-                        J_ref = (1.0 - w_ref) * J_nodes[j_ref] + w_ref * J_nodes[j_ref + 1]
-                    else:
-                        J_ref = J_nodes[j_ref]
-                    J_nodes = J_nodes - J_ref.reshape(1, 2)
+            J_end = J_nodes[-1].copy()
+            if np.linalg.norm(J_end) > 0:
+                alpha = (s_nodes / float(Ltot)).reshape(-1, 1)
+                J_nodes = J_nodes - alpha * J_end.reshape(1, 2)
 
         s_clip = np.clip(s, 0.0, float(Ltot))
         idx = np.searchsorted(s_nodes, s_clip, side="right") - 1
@@ -252,8 +213,8 @@ class DCEResultsNetworkV4:
         w = np.where(sR > sL, (s_clip - sL) / (sR - sL), 0.0)
         J = (1.0 - w).reshape(-1, 1) * J_nodes[idx] + w.reshape(-1, 1) * J_nodes[idx + 1]
 
-        v0 = self.calc.network.V(v_start)
-        v1 = self.calc.network.V(v_end)
+        v0 = self.calc.network.V(edge.v0)
+        v1 = self.calc.network.V(edge.v1)
         t = np.array([float(v1.x - v0.x), float(v1.y - v0.y)], float)
         L = float(np.hypot(t[0], t[1]))
         if L <= 0:
@@ -356,67 +317,15 @@ class DCEResultsNetworkV4:
             dJ = -(bII[i] * t_use[i] + bI[i] * n_use[i]) * float(ds[i])
             J_mid[i] = J_nodes[i] + 0.5 * dJ
             J_nodes[i + 1] = J_nodes[i] + dJ
+
         if enforce_global_tip_zero and Ltot > 0:
-            # Same tip-closure logic as above, but applied to both node- and midpoint-evaluated jumps.
-            if path_vids and len(path_vids) >= 2:
-                deg0 = self._vertex_degree(int(path_vids[0]))
-                deg1 = self._vertex_degree(int(path_vids[-1]))
-            else:
-                deg0 = deg1 = 0
+            J_end = J_nodes[-1].copy()
+            if np.linalg.norm(J_end) > 0:
+                alpha_nodes = (s_nodes / float(Ltot)).reshape(-1, 1)
+                J_nodes = J_nodes - alpha_nodes * J_end.reshape(1, 2)
 
-            if deg0 == 1 and deg1 == 1:
-                J0 = J_nodes[0].copy()
-                JL = J_nodes[-1].copy()
-                if (np.linalg.norm(J0) > 0) or (np.linalg.norm(JL) > 0):
-                    alpha_nodes = (s_nodes / float(Ltot)).reshape(-1, 1)
-                    alpha_mid   = (s_mid  / float(Ltot)).reshape(-1, 1)
-                    J_nodes = J_nodes - (1.0 - alpha_nodes) * J0.reshape(1, 2) - alpha_nodes * JL.reshape(1, 2)
-                    J_mid   = J_mid   - (1.0 - alpha_mid)   * J0.reshape(1, 2) - alpha_mid   * JL.reshape(1, 2)
-
-            elif deg0 != 1 and deg1 == 1:
-                JL = J_nodes[-1].copy()
-                if np.linalg.norm(JL) > 0:
-                    alpha_nodes = (s_nodes / float(Ltot)).reshape(-1, 1)
-                    alpha_mid   = (s_mid  / float(Ltot)).reshape(-1, 1)
-                    J_nodes = J_nodes - alpha_nodes * JL.reshape(1, 2)
-                    J_mid   = J_mid   - alpha_mid   * JL.reshape(1, 2)
-
-            elif deg0 == 1 and deg1 != 1:
-                J0 = J_nodes[0].copy()
-                if np.linalg.norm(J0) > 0:
-                    alpha_nodes = (s_nodes / float(Ltot)).reshape(-1, 1)
-                    alpha_mid   = (s_mid  / float(Ltot)).reshape(-1, 1)
-                    J_nodes = J_nodes - (1.0 - alpha_nodes) * J0.reshape(1, 2)
-                    J_mid   = J_mid   - (1.0 - alpha_mid)   * J0.reshape(1, 2)
-
-
-        # Gauge choice:
-        # Same rationale as in reconstruct_cod_csd_parametrized(): if there is at least one
-        # physical tip, we rely on the tip-closure enforcement as the gauge. Only apply a
-        # constant shift when neither endpoint is a leaf tip.
-        if Ltot > 0 and (not self._polyline_has_two_leaf_tips(path_vids)):
-            if path_vids and len(path_vids) >= 2:
-                deg0 = self._vertex_degree(int(path_vids[0]))
-                deg1 = self._vertex_degree(int(path_vids[-1]))
-            else:
-                deg0 = deg1 = 0
-
-            if (deg0 != 1) and (deg1 != 1):
-                s_ref, _vid_ref = self._polyline_reference_s(path_vids, s_vert)
-                if s_ref is not None:
-                    # Use node interpolation (same as _interp_J below)
-                    s_ref = float(np.clip(s_ref, float(s_nodes[0]), float(s_nodes[-1])))
-                    j = int(np.searchsorted(s_nodes, s_ref, side="right") - 1)
-                    j = max(0, min(j, len(s_nodes) - 2))
-                    sL = float(s_nodes[j]); sR = float(s_nodes[j + 1])
-                    if sR > sL:
-                        w = (s_ref - sL) / (sR - sL)
-                        J_ref = (1.0 - w) * J_nodes[j] + w * J_nodes[j + 1]
-                    else:
-                        J_ref = J_nodes[j]
-                    J_nodes = J_nodes - J_ref.reshape(1, 2)
-                    J_mid   = J_mid   - J_ref.reshape(1, 2)
-
+                alpha_mid = (s_mid / float(Ltot)).reshape(-1, 1)
+                J_mid = J_mid - alpha_mid * J_end.reshape(1, 2)
 
         def _interp_J(s_query: float) -> np.ndarray:
             s_query = float(np.clip(s_query, float(s_nodes[0]), float(s_nodes[-1])))
@@ -438,8 +347,8 @@ class DCEResultsNetworkV4:
 
         x_mid_edge = (s_mid_e - (s0 + 0.5 * Le)) * float(dir_sign)
 
-        v0_obj = self.calc.network.V(v_start)
-        v1_obj = self.calc.network.V(v_end)
+        v0_obj = self.calc.network.V(edge.v0)
+        v1_obj = self.calc.network.V(edge.v1)
         p0 = np.array([float(v0_obj.x), float(v0_obj.y)], dtype=float)
         p1 = np.array([float(v1_obj.x), float(v1_obj.y)], dtype=float)
         t = p1 - p0
@@ -466,8 +375,6 @@ class DCEResultsNetworkV4:
         extra = dict(
             pid=pid,
             dir_sign=dir_sign,
-            p0=p0,
-            p1=p1,
             s_mid=s_mid_e,
             J_mid=J_mid_e,
             xy_mid=xy_mid,
@@ -478,6 +385,8 @@ class DCEResultsNetworkV4:
             ex=ex,
             ey=ey,
             a_edge=a_edge,
+            p0=p0,
+            p1=p1,
         )
         return x_mid_edge, COD_mid, CSD_mid, extra
 
@@ -488,25 +397,55 @@ class DCEResultsNetworkV4:
         scale: float = 1.0,
         enforce_global_tip_zero: bool = True,
     ):
+        # Half-mode tip-zero enforcement: only apply global tip-zero if the polyline's END vertex is a leaf (degree==1).
+        enforce_tip_zero_local = bool(enforce_global_tip_zero)
+        try:
+            sol = getattr(self, "sol", None)
+            if isinstance(sol, dict) and str(sol.get("crack_mode", "full")).lower().strip() == "half":
+                e2p = sol.get("parametrized_edge_to_polyline", {})
+                pid = int(e2p.get(int(edge_index), -1))
+                polys = list(sol.get("parametrized_polylines", []))
+                if 0 <= pid < len(polys):
+                    path_vids = [int(v) for v in polys[pid].get("path_vertex_ids", [])]
+                    if path_vids:
+                        v_end = int(path_vids[-1])
+                        deg = {}
+                        for vv in self.calc.network.vertices:
+                            deg[int(vv.id)] = 0
+                        for ee in self.calc.network.edges:
+                            deg[int(ee.v0)] = deg.get(int(ee.v0), 0) + 1
+                            deg[int(ee.v1)] = deg.get(int(ee.v1), 0) + 1
+                        if int(deg.get(v_end, 0)) != 1:
+                            enforce_tip_zero_local = False
+        except Exception:
+            pass
         x_mid, COD_mid, CSD_mid, extra = self.reconstruct_cod_csd_panel_midpoints(
             edge_index=edge_index,
-            enforce_global_tip_zero=enforce_global_tip_zero,
+            enforce_global_tip_zero=enforce_tip_zero_local,
         )
         xy = extra["xy_mid"]
         J = extra["J_mid"]
+        
+        # Apply robust face parity in half-crack mode to prevent upper/lower swapping at kinks/junctions
+        parity = self._half_face_parity()
+        pid = int(extra.get("pid", -1))
+        sgn = int(parity.get(pid, 1)) if pid >= 0 else 1
+        if sgn not in (-1, 1):
+            sgn = 1
+        if sgn == -1:
+            J = -J
+            extra["J_mid"] = J
+            # Also flip stored endpoint jumps if present
+            if "J_v0" in extra: extra["J_v0"] = -np.asarray(extra["J_v0"], float)
+            if "J_v1" in extra: extra["J_v1"] = -np.asarray(extra["J_v1"], float)
         xy_upper = xy + 0.5 * float(scale) * J
         xy_lower = xy - 0.5 * float(scale) * J
 
         edge = self.calc.network.edges[edge_index]
-        # Prefer directed endpoints from reconstruction (polyline traversal)
-        if "p0" in extra and "p1" in extra:
-            p0 = np.asarray(extra["p0"], float).reshape(2,)
-            p1 = np.asarray(extra["p1"], float).reshape(2,)
-        else:
-            v0_obj = self.calc.network.V(edge.v0)
-            v1_obj = self.calc.network.V(edge.v1)
-            p0 = np.array([float(v0_obj.x), float(v0_obj.y)], dtype=float)
-            p1 = np.array([float(v1_obj.x), float(v1_obj.y)], dtype=float)
+        v0_obj = self.calc.network.V(edge.v0)
+        v1_obj = self.calc.network.V(edge.v1)
+        p0 = np.array([float(v0_obj.x), float(v0_obj.y)], dtype=float)
+        p1 = np.array([float(v1_obj.x), float(v1_obj.y)], dtype=float)
         J_v0 = np.asarray(extra.get("J_v0", [0.0, 0.0]), float)
         J_v1 = np.asarray(extra.get("J_v1", [0.0, 0.0]), float)
 

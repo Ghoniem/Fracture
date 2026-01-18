@@ -11,23 +11,10 @@ def reconstruct_cod_csd_parametrized_smoothed(
     cod_window_panels: int = 0,
     csd_window_panels: int = 0,
 ):
-    """Panel-aware reconstruction used by the plotter for parametrized cracks.
-
-    FULL mode (legacy):
-      - J(s) = ∫ (bII*t + bI*n) ds
-      - optional global tip-zero ramp so J(L)=0
-
-    HALF mode:
-      - J(s) = J0 - ∫ (bII*t + bI*n) ds (J0 from shared junction DOF at polyline start)
-      - tip-zero ramp (if requested) is applied only if the polyline END vertex is a leaf (degree==1)
-      - local frame uses directed polyline segment endpoints (v_start->v_end), not edge.v0/edge.v1
-    """
     edge_index = int(edge_index)
     sol = getattr(res, "sol", None)
     if not isinstance(sol, dict) or str(sol.get("solver_option", "")).lower() != "parametrized_crack":
         raise AttributeError("This reconstruction is only valid for solver_option='parametrized_crack'.")
-
-    crack_mode = str(sol.get("crack_mode", "full")).lower().strip()
 
     e2p = sol.get("parametrized_edge_to_polyline", {})
     pid = int(e2p.get(edge_index, -1))
@@ -56,12 +43,23 @@ def reconstruct_cod_csd_parametrized_smoothed(
     Le = float(segL[k])
     a = 0.5 * Le
 
+    edge = res.calc.network.edges[edge_index]
     v_start = int(path_vids[k])
     v_end = int(path_vids[k + 1])
+    if int(edge.v0) == v_start and int(edge.v1) == v_end:
+        dir_sign = +1
+    elif int(edge.v1) == v_start and int(edge.v0) == v_end:
+        dir_sign = -1
+    else:
+        dir_sign = +1
 
     n_pts = int(max(200, n_pts))
     x_edge = np.linspace(-a, a, n_pts)
-    s = s0 + (x_edge + a)
+
+    if dir_sign == +1:
+        s = s0 + (x_edge + a)
+    else:
+        s = s0 + (a - x_edge)
 
     s_nodes = np.asarray(solp.get("s_nodes"), float)
     bI = np.asarray(solp.get("bI"), float)
@@ -86,36 +84,15 @@ def reconstruct_cod_csd_parametrized_smoothed(
         bII = moving_average_nan(bII, int(csd_window_panels))
 
     J_nodes = np.zeros((Np + 1, 2), float)
+    for i in range(Np):
+        dJ = (bII[i] * t_col[i] + bI[i] * n_col[i]) * float(ds[i])
+        J_nodes[i + 1] = J_nodes[i] + dJ
 
-    if crack_mode == "half":
-        J0 = np.asarray(solp.get("J0", [0.0, 0.0]), float).reshape(2,)
-        J_nodes[0] = J0
-        for i in range(Np):
-            dJ = (bII[i] * t_col[i] + bI[i] * n_col[i]) * float(ds[i])
-            J_nodes[i + 1] = J_nodes[i] - dJ
-
-        if enforce_global_tip_zero and Ltot > 0:
-            net = res.calc.network
-            deg = {int(v.id): 0 for v in net.vertices}
-            for e in net.edges:
-                deg[int(e.v0)] = deg.get(int(e.v0), 0) + 1
-                deg[int(e.v1)] = deg.get(int(e.v1), 0) + 1
-            v_poly_end = int(path_vids[-1]) if path_vids else v_end
-            if int(deg.get(v_poly_end, 0)) == 1:
-                J_end = J_nodes[-1].copy()
-                alpha = (s_nodes / float(Ltot)).reshape(-1, 1)
-                J_nodes = J_nodes - alpha * J_end.reshape(1, 2)
-
-    else:
-        for i in range(Np):
-            dJ = (bII[i] * t_col[i] + bI[i] * n_col[i]) * float(ds[i])
-            J_nodes[i + 1] = J_nodes[i] + dJ
-
-        if enforce_global_tip_zero and Ltot > 0:
-            J_end = J_nodes[-1].copy()
-            if np.linalg.norm(J_end) > 0:
-                alpha = (s_nodes / float(Ltot)).reshape(-1, 1)
-                J_nodes = J_nodes - alpha * J_end.reshape(1, 2)
+    if enforce_global_tip_zero and Ltot > 0:
+        J_end = J_nodes[-1].copy()
+        if np.linalg.norm(J_end) > 0:
+            alpha = (s_nodes / float(Ltot)).reshape(-1, 1)
+            J_nodes = J_nodes - alpha * J_end.reshape(1, 2)
 
     s_clip = np.clip(s, 0.0, float(Ltot))
     idx = np.searchsorted(s_nodes, s_clip, side="right") - 1
@@ -125,9 +102,10 @@ def reconstruct_cod_csd_parametrized_smoothed(
     w = np.where(sR > sL, (s_clip - sL) / (sR - sL), 0.0)
     J = (1.0 - w).reshape(-1, 1) * J_nodes[idx] + w.reshape(-1, 1) * J_nodes[idx + 1]
 
-    net = res.calc.network
-    p0 = np.array(net.vertex_coords(v_start), float)
-    p1 = np.array(net.vertex_coords(v_end), float)
+    v0 = res.calc.network.V(edge.v0)
+    v1 = res.calc.network.V(edge.v1)
+    p0 = np.array([float(v0.x), float(v0.y)], float)
+    p1 = np.array([float(v1.x), float(v1.y)], float)
     t = p1 - p0
     L = float(np.hypot(t[0], t[1]))
     if L <= 0:
@@ -136,7 +114,6 @@ def reconstruct_cod_csd_parametrized_smoothed(
         ex = t / L
         ey = np.array([-ex[1], ex[0]])
         R = np.column_stack([ex, ey])
-
     loc = (R.T @ J.T).T
     CSD = loc[:, 0]
     COD = loc[:, 1]

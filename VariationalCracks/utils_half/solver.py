@@ -12,7 +12,7 @@ from .solver_network import VertexV4, EdgeV4, CrackNetworkV4
 # - Keep the class name DCENetworkStaticV4 the same to preserve the public API.
 # - The implementation should accept an additional option for half cracks
 #   (e.g., crack_mode="half") while retaining crack_mode="full".
-from .solver_parametrized_half_OptionA_v1 import DCENetworkStaticV4
+from .solver_parametrized_half import DCENetworkStaticV4
 
 __all__ = [
     "Material", "Crack", "AppliedStress",
