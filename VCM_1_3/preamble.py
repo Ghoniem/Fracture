@@ -51,10 +51,18 @@ def enable_autoreload():
 # ------------------------------------------------------------
 from fracture_utils.Ugenerator.network_gen import CrackNetworkGenerator
 
-from fracture_utils.Usolver.network import CrackNetworkV4
+from fracture_utils.Usolver.network import CrackNetworkV4 as CrackNetworkV4_base
+from fracture_utils.Usolver.network_v1 import CrackNetworkV4 as CrackNetworkV4_v1
+CrackNetworkV4 = CrackNetworkV4_v1
 from fracture_utils.Usolver.material import Material, AppliedStress
 # from fracture_utils.Usolver.parametrization import DCENetworkStaticV4  # type: ignore
-from fracture_utils.Usolver.parametrization import DCENetworkStaticV4  # type: ignore
+# from fracture_utils.Usolver.parametrization_v1 import DCENetworkStaticV4  # type: ignore
+from fracture_utils.Usolver.parametrization_v4 import DCENetworkStaticV4  # type: ignore
+
+
+# import fracture_utils.Usolver.build_v2 as build
+import fracture_utils.Usolver.build_v3 as build
+
 
 
 from fracture_utils.Uprocessor.results import DCEResultsNetworkV4
@@ -68,8 +76,7 @@ from fracture_utils.Uplotter.plot_stress import StressPlotOptsV4
 from fracture_utils.Uplotter.plot_displacement import DCEPlotterDisplacementV4
 
 # Deformed network plotter (new filename)
-from fracture_utils.Uplotter.plot_deformed_network import DCEPlotterDeformedV4 as DCEPlotterDeformedV4
-# from fracture_utils.Uplotter.plotter_deformed_v14_arc_v2 import DCEPlotterDeformedV4 as DCEPlotterDeformedV4
+from fracture_utils.Uplotter.plot_deformed_network_v2 import DCEPlotterDeformedV4 as DCEPlotterDeformedV4
 
 
 
