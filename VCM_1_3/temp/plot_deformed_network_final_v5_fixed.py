@@ -21,13 +21,6 @@ import matplotlib.pyplot as plt
 
 from .smooth import moving_average_nan, resolve_smooth_window
 
-# Optional junction face trimming utilities (core model)
-try:
-    from .trim_junction import BranchFaces, trim_faces_at_junction
-except Exception:  # pragma: no cover
-    BranchFaces = None
-    trim_faces_at_junction = None
-
 
 # -----------------------------
 # small utilities
@@ -268,11 +261,6 @@ class DCEPlotterDeformedV4:
         cod_smooth_window: int = 5,
         csd_smooth_window: int = 5,
         junction_model: str | None = None,
-        *,
-        trim_core_junction_faces: bool = False,
-        trim_junction_look_ahead: int = 3,
-        trim_junction_search_segments: int = 10,
-        show_junction_gap: bool = False,
         show: bool = True,
         save: bool = False,
         debug_counts: bool = True,
@@ -286,11 +274,6 @@ class DCEPlotterDeformedV4:
                       (No new physics; visualization-only gauge alignment.)
           - "core":   do not stitch; instead trim faces near deg>1 vertices to avoid
                       over-plotting through the junction core.
-
-        trim_core_junction_faces:
-          - When junction_model=="core" and the network has deg>=3 junctions, optionally perform
-            geometric trimming so lower_face(branch j) meets upper_face(branch j+1) around the
-            junction. This eliminates face lines that run through the junction core.
         """
         res = self.res
         sol = getattr(res, "sol", None)
@@ -398,9 +381,6 @@ class DCEPlotterDeformedV4:
                 pid=pid,
                 start_vid=start_vid, end_vid=end_vid,
                 start_deg=deg.get(start_vid, 0), end_deg=deg.get(end_vid, 0),
-                start_is_tip=bool(start_is_tip),
-                end_is_tip=bool(end_is_tip),
-                has_tip=bool(start_is_tip or end_is_tip),
                 P_plot=P_plot * sxy,
                 J_plot=J_plot * sxy,   # J has length units
             ))
@@ -410,15 +390,6 @@ class DCEPlotterDeformedV4:
             # Build incident map vid -> list of (poly_index, end, J_endpoint)
             inc: dict[int, list[tuple[int, str, np.ndarray]]] = {}
             for i, pd in enumerate(poly_data):
-                # IMPORTANT: Do not apply constant gauge shifts to any polyline that
-                # terminates at a deg-1 tip. A constant shift would generally destroy
-                # the physical boundary condition J(tip)=0 and visually "open" the tip.
-                #
-                # In typical networks (junction-to-tip branches), the solver already
-                # enforces both junction constraints and tip constraints, so no stitching
-                # should be required for these polylines.
-                if pd.get("has_tip", False):
-                    continue
                 sv, ev = pd["start_vid"], pd["end_vid"]
                 if sv >= 0 and deg.get(sv, 0) > 1:
                     inc.setdefault(sv, []).append((i, "start", pd["J_plot"][0].copy()))
@@ -434,105 +405,35 @@ class DCEPlotterDeformedV4:
                     delta = (Jref - Jend).reshape(1, 2)
                     poly_data[i]["J_plot"] = poly_data[i]["J_plot"] + delta
 
-        # Build crack faces and (optionally) apply core-junction trimming.
-        # - If junction_model=="core" and trim_core_junction_faces==True, we trim faces at
-        #   multi-branch junctions (degree >= 3) using local face intersections.
-        # - Otherwise, we use a simple index-based trim near deg>1 vertices.
+        # For core model, we do trimming near deg>1 vertices (visualization only).
         trim_n = max(2, int(0.02 * int(n_pts_per_edge)))
-
-        # Precompute faces for all polylines (full arrays); we may modify them in-place.
         for pd in poly_data:
             Pp = pd["P_plot"]
             Jp = pd["J_plot"]
-            pd["U_plot"] = Pp + 0.5 * scale * Jp
-            pd["L_plot"] = Pp - 0.5 * scale * Jp
-
-        gap_polys: list[np.ndarray] = []
-
-        if junction_model == "core" and trim_core_junction_faces and (trim_faces_at_junction is not None) and (BranchFaces is not None):
-            # Build vertex -> incident map with orientation info.
-            inc: dict[int, list[tuple[int, bool]]] = {}
-            for i, pd in enumerate(poly_data):
-                sv, ev = pd["start_vid"], pd["end_vid"]
-                if sv >= 0 and deg.get(sv, 0) > 2:
-                    inc.setdefault(sv, []).append((i, True))   # True: start_at_vertex
-                if ev >= 0 and deg.get(ev, 0) > 2:
-                    inc.setdefault(ev, []).append((i, False))  # False: end_at_vertex
-
-            # Trim per junction vertex.
-            for vid, items in inc.items():
-                if len(items) < 3:
-                    continue
-                try:
-                    vxy = np.asarray(net.vertex_coords(int(vid)), float).reshape(2,) * sxy
-                except Exception:
-                    continue
-
-                branches = []
-                # Map pid -> orientation (start_at_vertex)
-                orient = {}
-                for (i, start_at_vertex) in items:
-                    pd = poly_data[i]
-                    Pp = pd["P_plot"]
-                    Up = pd["U_plot"]
-                    Lp = pd["L_plot"]
-                    if start_at_vertex:
-                        branches.append(BranchFaces(pid=i, P=Pp, U=Up, L=Lp, start_at_vertex=True))
-                        orient[i] = True
-                    else:
-                        branches.append(BranchFaces(pid=i, P=Pp[::-1].copy(), U=Up[::-1].copy(), L=Lp[::-1].copy(), start_at_vertex=True))
-                        orient[i] = False
-
-                trimmed, gap_pts = trim_faces_at_junction(
-                    vxy,
-                    branches,
-                    look_ahead=int(trim_junction_look_ahead),
-                    search_segments=int(trim_junction_search_segments),
-                )
-                if show_junction_gap and gap_pts is not None and getattr(gap_pts, "size", 0) > 0:
-                    gap_polys.append(np.asarray(gap_pts, float))
-
-                # Write back trimmed faces, restoring original orientation where needed.
-                for b in trimmed:
-                    i = int(b.pid)
-                    if orient.get(i, True):  # start_at_vertex
-                        poly_data[i]["U_plot"] = b.U
-                        poly_data[i]["L_plot"] = b.L
-                    else:
-                        poly_data[i]["U_plot"] = b.U[::-1].copy()
-                        poly_data[i]["L_plot"] = b.L[::-1].copy()
-
-        # Draw polylines
-        for pd in poly_data:
-            Pp = pd["P_plot"]
-            Up = pd["U_plot"]
-            Lp = pd["L_plot"]
-
-            # Simple trim option (used when not doing geometric core trimming)
-            if junction_model == "core" and not trim_core_junction_faces:
-                i0, i1 = 0, len(Pp)
+            # Default: no trim
+            i0, i1 = 0, len(Pp)
+            if junction_model == "core":
                 if pd["start_vid"] >= 0 and pd["start_deg"] > 1:
                     i0 = min(i0 + trim_n, i1 - 2)
                 if pd["end_vid"] >= 0 and pd["end_deg"] > 1:
                     i1 = max(i1 - trim_n, i0 + 2)
-                Pp = Pp[i0:i1]
-                Up = Up[i0:i1]
-                Lp = Lp[i0:i1]
 
+            Pp = Pp[i0:i1]
+            Jp = Jp[i0:i1]
+
+            # Faces
+            U = Pp + 0.5 * scale * Jp
+            L = Pp - 0.5 * scale * Jp
+
+            # Draw
             ax.plot(Pp[:, 0], Pp[:, 1], "k--", lw=1.0, alpha=0.55)
             if show_faces:
-                ax.plot(Up[:, 0], Up[:, 1], lw=1.6)
-                ax.plot(Lp[:, 0], Lp[:, 1], lw=1.6)
+                ax.plot(U[:, 0], U[:, 1], lw=1.6)
+                ax.plot(L[:, 0], L[:, 1], lw=1.6)
 
             n_plotted += 1
 
-        if show_junction_gap and gap_polys:
-            for gp in gap_polys:
-                if gp.ndim == 2 and gp.shape[0] >= 3:
-                    # close polygon
-                    gpc = np.vstack([gp, gp[0:1]])
-                    ax.plot(gpc[:, 0], gpc[:, 1], "k-", lw=1.0, alpha=0.35)
-# Styling: match network graph look (limits from graph, not from deformation)
+        # Styling: match network graph look (limits from graph, not from deformation)
         ax.set_title(f"Deformed Crack Network (junction_model={junction_model}, scale={float(scale):.2e})")
         ax.set_xlabel(f"x [{units}]")
         ax.set_ylabel(f"y [{units}]")

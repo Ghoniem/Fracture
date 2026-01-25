@@ -26,7 +26,6 @@ import matplotlib.pyplot as plt
 
 # Local helper (provided in this package by the user)
 from .reconstruct import reconstruct_cod_csd_parametrized_smoothed
-from .smooth import moving_average_nan, resolve_smooth_window
 
 
 def _deg_map_from_network(net) -> dict[int, int]:
@@ -37,36 +36,6 @@ def _deg_map_from_network(net) -> dict[int, int]:
         deg[v0] = deg.get(v0, 0) + 1
         deg[v1] = deg.get(v1, 0) + 1
     return deg
-
-
-def _infer_ne_half(sol: dict) -> int:
-    """Best-effort extraction of ne_half from solver output dict."""
-    if not isinstance(sol, dict):
-        return 0
-    for k in ("ne_half", "nh", "n_half"):
-        v = sol.get(k, None)
-        if v is not None:
-            try:
-                return int(v)
-            except Exception:
-                pass
-    params = sol.get("params", None)
-    if isinstance(params, dict):
-        v = params.get("ne_half", None)
-        if v is not None:
-            try:
-                return int(v)
-            except Exception:
-                pass
-    pls = sol.get("polyline_solutions", None)
-    if isinstance(pls, list) and pls:
-        bI = pls[0].get("bI", None)
-        if bI is not None:
-            try:
-                return max(1, int(len(bI)//2))
-            except Exception:
-                pass
-    return 0
 
 
 def _unit_frame(p0: np.ndarray, p1: np.ndarray):
@@ -386,60 +355,6 @@ class DCEPlotterDeformedV4:
                     except Exception:
                         n_skipped += 1
                         continue
-                if kind == "cspline":
-                    try:
-                        sol_list = list(sol.get("polyline_solutions", []))
-                        solp = sol_list[pid] if pid < len(sol_list) else None
-                        if solp is None:
-                            n_skipped += 1
-                            continue
-
-                        # Reconstruct jump at solver midpoints, then resample for smooth plotting
-                        P_mid, J_mid, s_mid = _reconstruct_jump_from_b(solp)
-                        if P_mid.shape[0] < 2:
-                            n_skipped += 1
-                            continue
-
-                        nh = _infer_ne_half(sol)
-                        w_cod = resolve_smooth_window(cod_smooth_window, nh, C=50, wmin=3)
-                        w_csd = resolve_smooth_window(csd_smooth_window, nh, C=50, wmin=3)
-                        wJ = max(int(w_cod), int(w_csd))
-                        if wJ > 1:
-                            Jx = moving_average_nan(J_mid[:, 0], wJ)
-                            Jy = moving_average_nan(J_mid[:, 1], wJ)
-                            J_mid = np.c_[Jx, Jy]
-
-                        s_plot = np.linspace(float(s_mid[0]), float(s_mid[-1]), max(10, int(n_theta)))
-                        Px = np.interp(s_plot, s_mid, P_mid[:, 0])
-                        Py = np.interp(s_plot, s_mid, P_mid[:, 1])
-                        Jx = np.interp(s_plot, s_mid, J_mid[:, 0])
-                        Jy = np.interp(s_plot, s_mid, J_mid[:, 1])
-                        P_plot = np.c_[Px, Py]
-                        J_plot = np.c_[Jx, Jy]
-
-                        start_vid = int(meta.get("v_start", -1))
-                        end_vid   = int(meta.get("v_end", -1))
-                        start_is_tip = (start_vid < 0) or (deg.get(start_vid, 0) == 1)
-                        end_is_tip   = (end_vid < 0) or (deg.get(end_vid, 0) == 1)
-                        J_plot = _enforce_tip_zero_polyline(P_plot, J_plot, start_is_tip=start_is_tip, end_is_tip=end_is_tip)
-
-                        U = P_plot + 0.5 * float(scale) * J_plot
-                        Lw = P_plot - 0.5 * float(scale) * J_plot
-
-                        poly_data.append({
-                            "pid": pid,
-                            "color": color_list[pid % len(color_list)],
-                            "start_vid": start_vid,
-                            "end_vid": end_vid,
-                            "P": P_plot,
-                            "U": U,
-                            "L": Lw,
-                        })
-                        continue
-                    except Exception:
-                        n_skipped += 1
-                        continue
-
                 try:
                     path_vids = [int(v) for v in meta.get("path_vertex_ids", [])]
                     path_edges = [int(i) for i in meta.get("path_edge_indices", [])]

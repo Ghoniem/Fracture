@@ -398,9 +398,6 @@ class DCEPlotterDeformedV4:
                 pid=pid,
                 start_vid=start_vid, end_vid=end_vid,
                 start_deg=deg.get(start_vid, 0), end_deg=deg.get(end_vid, 0),
-                start_is_tip=bool(start_is_tip),
-                end_is_tip=bool(end_is_tip),
-                has_tip=bool(start_is_tip or end_is_tip),
                 P_plot=P_plot * sxy,
                 J_plot=J_plot * sxy,   # J has length units
             ))
@@ -410,15 +407,6 @@ class DCEPlotterDeformedV4:
             # Build incident map vid -> list of (poly_index, end, J_endpoint)
             inc: dict[int, list[tuple[int, str, np.ndarray]]] = {}
             for i, pd in enumerate(poly_data):
-                # IMPORTANT: Do not apply constant gauge shifts to any polyline that
-                # terminates at a deg-1 tip. A constant shift would generally destroy
-                # the physical boundary condition J(tip)=0 and visually "open" the tip.
-                #
-                # In typical networks (junction-to-tip branches), the solver already
-                # enforces both junction constraints and tip constraints, so no stitching
-                # should be required for these polylines.
-                if pd.get("has_tip", False):
-                    continue
                 sv, ev = pd["start_vid"], pd["end_vid"]
                 if sv >= 0 and deg.get(sv, 0) > 1:
                     inc.setdefault(sv, []).append((i, "start", pd["J_plot"][0].copy()))

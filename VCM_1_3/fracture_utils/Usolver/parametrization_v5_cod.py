@@ -26,20 +26,21 @@ from .material import Material, AppliedStress
 from .network import CrackNetworkV4
 from .KKT import solve_kkt_lsq
 
-from .build import (
+from .build_v4 import (
     vertex_degrees,
     build_polylines_full,
     build_polylines_half_branches,
     discretize_polylines,
     assemble_operator,
     allocate_unknowns,
+    make_cspline_polyline_from_path,
+)
 
-    make_cspline_polyline_from_path,)
-
-from .constraints import (
+from .constraints_v2_cod import (
     build_constraints_full,
     build_constraints_half,
     build_constraints_half_option_a,
+    build_cod_rows,
 )
 
 
@@ -73,7 +74,7 @@ class DCENetworkStaticV4:
         opt = str(solver_option).lower().strip()
         if opt not in ("parametrized_crack", "parameterized_crack", "param_crack"):
             raise ValueError("v4 solver supports solver_option='parametrized_crack' only.")
-        if str(parametrization).lower().strip() not in ("polyline", "segmented", "kinked", "cspline", "cubic_spline"):
+        if str(parametrization).lower().strip() not in ("polyline", "segmented", "kinked", "cspline", "cubic_spline", "mixed", "arc"):
             raise ValueError("v4 solver currently supports parametrization='polyline' only.")
 
         rep_in = str(representation).lower().strip()
@@ -95,10 +96,10 @@ class DCENetworkStaticV4:
             raise ValueError(f"Unknown node_distribution={node_distribution!r}. Use 'uniform' or 'tip_dense'.")
 
         crack_mode = str(crack_mode).lower().strip()
+        param_kind = str(parametrization).lower().strip()
+
         if crack_mode not in ("full", "half"):
             raise ValueError("crack_mode must be 'full' or 'half'.")
-
-        param_kind = str(parametrization).lower().strip()
 
         # Junction model for half mode:
 
@@ -132,7 +133,10 @@ class DCENetworkStaticV4:
         # Discretize polylines and assemble operator
         # ------------------------------------------------------------
         # Convert polyline components to interpolating cubic splines (through vertices)
-        if param_kind in ("cspline", "cubic_spline"):
+        # - cspline/cubic_spline: convert ALL polyline components with >=3 vertices
+        # - mixed: convert ONLY those whose endpoint key is mapped to 'cspline' in branch_param
+        branch_param = _ignored.get("branch_param", None)
+        if param_kind in ("cspline", "cubic_spline", "mixed"):
             new_polylines = []
             for meta in polylines:
                 if str(meta.get("kind", "polyline")).lower() != "polyline":
@@ -143,6 +147,18 @@ class DCENetworkStaticV4:
                 if len(vids_path) < 3:
                     new_polylines.append(meta)
                     continue
+
+                if param_kind == "mixed":
+                    v0 = int(meta.get("v_start", vids_path[0]))
+                    v1 = int(meta.get("v_end", vids_path[-1]))
+                    key = (min(v0, v1), max(v0, v1))
+                    mode = None
+                    if isinstance(branch_param, dict):
+                        mode = branch_param.get(key, branch_param.get((v0, v1), None))
+                    if str(mode).lower().strip() not in ("cspline", "cubic_spline"):
+                        new_polylines.append(meta)
+                        continue
+
                 pts = np.array([self.network.vertex_coords(v) for v in vids_path], float)
                 new_polylines.append(
                     make_cspline_polyline_from_path(
@@ -227,7 +243,100 @@ class DCENetworkStaticV4:
 
             rhs = np.concatenate([rhs, np.zeros((P.shape[0],), float)])
 
-        q = solve_kkt_lsq(K, rhs, C, ridge=float(ridge))
+        # ------------------------------------------------------------
+        # Optional: enforce COD >= 0 via active-set on panel midpoints (half mode)
+        # ------------------------------------------------------------
+        enforce_cod = bool(_ignored.get("enforce_cod_nonnegative", False) or _ignored.get("enforce_cod_positive", False))
+        cod_tol = float(_ignored.get("cod_tol", 1e-10))
+        cod_max_iter = int(_ignored.get("cod_max_iter", 25))
+        if not np.isfinite(cod_tol) or cod_tol <= 0:
+            cod_tol = 1e-10
+        cod_max_iter = max(1, int(cod_max_iter))
+
+        C_base = C
+        q = None  # set below
+
+        if crack_mode == "half" and enforce_cod:
+            active: set[tuple[int, int]] = set()
+
+            for _it in range(cod_max_iter):
+                C_work = C_base
+                if active:
+                    C_cod = build_cod_rows(
+                        active_pairs=sorted(active),
+                        poly_panels=poly_panels,
+                        offsets=offsets,
+                        nunk=nunk,
+                        crack_mode=crack_mode,
+                        junction_model=junction_model,
+                        junction_dof=junction_dof,
+                        branch_end_dof=branch_end_dof,
+                    )
+                    if getattr(C_cod, "size", 0):
+                        C_work = np.vstack([C_base, C_cod])
+
+                # Solve with current active set
+                q = solve_kkt_lsq(K, rhs, C_work, ridge=float(ridge))
+
+                # Evaluate COD at panel midpoints and add newly violated constraints
+                newly_violated: list[tuple[int, int]] = []
+                for pid, pp in enumerate(poly_panels):
+                    off = offsets[int(pid)]
+                    Np = int(pp["Np"])
+                    ds = np.asarray(pp["ds"], float).reshape(-1)
+                    tmid = np.asarray(pp["t_mid"], float)
+                    nmid = np.asarray(pp["n_mid"], float)
+
+                    # J0 at polyline start
+                    if str(junction_model).lower().strip() == "strict":
+                        v0 = int(pp["v_start"])
+                        if v0 in junction_dof:
+                            joff = int(junction_dof[v0])
+                            J0 = np.array([float(q[joff + 0]), float(q[joff + 1])], float)
+                        else:
+                            J0 = np.array([0.0, 0.0], float)
+                    else:
+                        key = (int(pid), "start")
+                        if key in branch_end_dof:
+                            joff = int(branch_end_dof[key])
+                            J0 = np.array([float(q[joff + 0]), float(q[joff + 1])], float)
+                        else:
+                            J0 = np.array([0.0, 0.0], float)
+
+                    # Panel contributions Bj = (bII*t + bI*n)*ds
+                    Bj = np.zeros((Np, 2), float)
+                    for j in range(Np):
+                        bI = float(q[off + 2 * j + 0])
+                        bII = float(q[off + 2 * j + 1])
+                        tj = np.array([float(tmid[j, 0]), float(tmid[j, 1])], float)
+                        nj = np.array([float(nmid[j, 0]), float(nmid[j, 1])], float)
+                        Bj[j, :] = (bII * tj + bI * nj) * float(ds[j])
+
+                    prefix = np.cumsum(Bj, axis=0)
+
+                    for k in range(Np):
+                        integ = (prefix[k - 1] if k > 0 else 0.0) + 0.5 * Bj[k]
+                        Jk = J0 - integ
+                        nk = np.array([float(nmid[k, 0]), float(nmid[k, 1])], float)
+                        cod = float(np.dot(nk, Jk))
+                        if cod < -cod_tol:
+                            pair = (int(pid), int(k))
+                            if pair not in active:
+                                newly_violated.append(pair)
+
+                if not newly_violated:
+                    # Finalize constraint set for packaging/metadata
+                    C = C_work
+                    break
+
+                active.update(newly_violated)
+
+            # If loop ends by max_iter, keep latest q/C_work
+            if q is None:
+                q = solve_kkt_lsq(K, rhs, C_base, ridge=float(ridge))
+        else:
+            q = solve_kkt_lsq(K, rhs, C, ridge=float(ridge))
+
 
         # ------------------------------------------------------------
         # Pack solution
@@ -329,7 +438,7 @@ class DCENetworkStaticV4:
         sol = dict(
             representation=rep_in,
             solver_option="parametrized_crack",
-            parametrization="polyline",
+            parametrization=param_kind,
             ne_half=int(ne_half),
             node_distribution=dist_in,
             collocation_mode=collocation_mode,

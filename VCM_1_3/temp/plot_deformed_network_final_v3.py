@@ -21,13 +21,6 @@ import matplotlib.pyplot as plt
 
 from .smooth import moving_average_nan, resolve_smooth_window
 
-# Optional junction face trimming utilities (core model)
-try:
-    from .trim_junction import BranchFaces, trim_faces_at_junction
-except Exception:  # pragma: no cover
-    BranchFaces = None
-    trim_faces_at_junction = None
-
 
 # -----------------------------
 # small utilities
@@ -103,15 +96,6 @@ def _resample_polyline_by_arclength(P: np.ndarray, n: int) -> tuple[np.ndarray, 
     Py = np.interp(s_new, s, P[:, 1])
     return np.c_[Px, Py], s_new
 
-
-
-def _arclength(P: np.ndarray) -> np.ndarray:
-    """Cumulative arclength for a polyline."""
-    P = np.asarray(P, float)
-    if P.ndim != 2 or P.shape[0] < 2:
-        return np.zeros((P.shape[0],), float)
-    ds = np.hypot(np.diff(P[:,0]), np.diff(P[:,1]))
-    return np.concatenate([[0.0], np.cumsum(ds)])
 
 def _enforce_tip_zero_polyline(P: np.ndarray, J: np.ndarray, start_is_tip: bool, end_is_tip: bool) -> np.ndarray:
     """
@@ -268,30 +252,10 @@ class DCEPlotterDeformedV4:
         cod_smooth_window: int = 5,
         csd_smooth_window: int = 5,
         junction_model: str | None = None,
-        *,
-        trim_core_junction_faces: bool = False,
-        trim_junction_look_ahead: int = 3,
-        trim_junction_search_segments: int = 10,
-        show_junction_gap: bool = False,
         show: bool = True,
         save: bool = False,
         debug_counts: bool = True,
     ):
-        """
-        Plot the deformed crack network using solver-provided jump fields when available.
-
-        junction_model:
-          - "strict": stitch faces at deg>1 vertices by applying a *constant* per-polyline
-                      jump shift so that endpoint J values match at the shared vertex.
-                      (No new physics; visualization-only gauge alignment.)
-          - "core":   do not stitch; instead trim faces near deg>1 vertices to avoid
-                      over-plotting through the junction core.
-
-        trim_core_junction_faces:
-          - When junction_model=="core" and the network has deg>=3 junctions, optionally perform
-            geometric trimming so lower_face(branch j) meets upper_face(branch j+1) around the
-            junction. This eliminates face lines that run through the junction core.
-        """
         res = self.res
         sol = getattr(res, "sol", None)
         calc = getattr(res, "calc", None)
@@ -314,7 +278,7 @@ class DCEPlotterDeformedV4:
         fig, ax = plt.subplots(figsize=(6.5, 4.0))
         n_plotted, n_skipped = 0, 0
 
-        # If not parametrized solver output, just plot the graph midlines
+        # Fallback: if not parametrized solver output, just plot the graph midlines
         if not isinstance(sol, dict) or str(sol.get("solver_option", "")).lower() != "parametrized_crack":
             for e in getattr(net, "edges", []):
                 try:
@@ -328,228 +292,120 @@ class DCEPlotterDeformedV4:
             ax.set_title(f"Deformed Crack Network (scale={float(scale):.2e})")
             ax.set_xlabel(f"x [{units}]")
             ax.set_ylabel(f"y [{units}]")
-            ax.grid(True, alpha=0.35)
-            _set_graph_like_limits(ax, Vc * sxy if Vc.size else None)
+            ax.grid(True, alpha=0.25)
+            _set_graph_like_limits(ax, Vc * sxy)
+
             if debug_counts:
                 ax.text(0.02, 0.98, f"plotted={n_plotted}, skipped={n_skipped}",
                         transform=ax.transAxes, va="top", ha="left", fontsize=9)
             if save:
-                if self.out_dir is None:
-                    raise ValueError("out_dir must be set to save figures.")
                 self.out_dir.mkdir(parents=True, exist_ok=True)
                 fig.savefig(self.out_dir / "deformed_network.png", dpi=200, bbox_inches="tight")
             if show:
                 plt.show()
             return fig, ax
 
-        # parametrized crack path
-        polylines = list(sol.get("parametrized_polylines", sol.get("polylines", [])))
+        polylines = list(sol.get("parametrized_polylines", []))
         sol_list  = list(sol.get("polyline_solutions", []))
         if junction_model is None:
             junction_model = str(sol.get("junction_model", "strict")).lower()
         else:
             junction_model = str(junction_model).lower()
 
+        # Collect points for global limits (graph-like)
+        all_pts = [Vc * sxy] if Vc.size else []
+
         nh = _infer_ne_half(sol)
         w_cod = resolve_smooth_window(cod_smooth_window, nh, C=50, wmin=3)
         w_csd = resolve_smooth_window(csd_smooth_window, nh, C=50, wmin=3)
         wJ = max(int(w_cod), int(w_csd))
 
-        # 1) Build per-polyline plotted midline + jump, but do NOT draw yet.
-        poly_data: list[dict] = []
         for pid, meta in enumerate(polylines):
             solp0 = sol_list[pid] if pid < len(sol_list) else None
             if solp0 is None:
                 n_skipped += 1
                 continue
 
+            # endpoint tip flags from graph degrees
             start_vid = int(meta.get("v_start", -1))
             end_vid   = int(meta.get("v_end", -1))
             start_is_tip = (start_vid < 0) or (deg.get(start_vid, 0) == 1)
             end_is_tip   = (end_vid < 0) or (deg.get(end_vid, 0) == 1)
 
-            # Orient arrays so a unique tip (if any) is at index 0 (helps fallback integration).
+            # Orient arrays so a unique tip (if any) is at index 0.
             solp, did_rev, start_is_tip, end_is_tip = _oriented_solp_to_tip(solp0, start_is_tip, end_is_tip)
-            if did_rev:
-                start_vid, end_vid = end_vid, start_vid
 
+            # Midline and jump along midline
             P_mid, J_mid = _reconstruct_jump(solp)
             if P_mid.ndim != 2 or P_mid.shape[0] < 2 or J_mid.shape != P_mid.shape:
                 n_skipped += 1
                 continue
 
-            # Optional smoothing of J
+            # Smooth J only (optional)
             if wJ > 1:
                 J_mid = np.c_[moving_average_nan(J_mid[:, 0], wJ),
                              moving_average_nan(J_mid[:, 1], wJ)]
 
-            # Enforce solver tip J=0 where applicable (deg-1 vertices)
+            # Enforce tip J=0 where applicable (consistent with your solver constraints at deg-1 vertices)
             J_mid = _enforce_tip_zero_polyline(P_mid, J_mid, start_is_tip, end_is_tip)
 
             # Resample midline for plotting resolution
-            P_plot, s_plot = _resample_polyline_by_arclength(P_mid, n=int(n_pts_per_edge))
+            P_plot, _ = _resample_polyline_by_arclength(P_mid, n=int(n_pts_per_edge))
 
             # Interpolate J to plot points by arclength
-            s_mid = _arclength(P_mid)
-            J_plot = np.c_[np.interp(s_plot, s_mid, J_mid[:, 0]),
-                           np.interp(s_plot, s_mid, J_mid[:, 1])]
+            ds = np.hypot(np.diff(P_mid[:, 0]), np.diff(P_mid[:, 1]))
+            s_mid = np.concatenate([[0.0], np.cumsum(ds)])
+            ds2 = np.hypot(np.diff(P_plot[:, 0]), np.diff(P_plot[:, 1]))
+            s_plot = np.concatenate([[0.0], np.cumsum(ds2)])
+            if s_mid[-1] > 0:
+                Jx = np.interp(s_plot, s_mid, J_mid[:, 0])
+                Jy = np.interp(s_plot, s_mid, J_mid[:, 1])
+                J_plot = np.c_[Jx, Jy]
+            else:
+                J_plot = np.zeros_like(P_plot)
 
-            poly_data.append(dict(
-                pid=pid,
-                start_vid=start_vid, end_vid=end_vid,
-                start_deg=deg.get(start_vid, 0), end_deg=deg.get(end_vid, 0),
-                start_is_tip=bool(start_is_tip),
-                end_is_tip=bool(end_is_tip),
-                has_tip=bool(start_is_tip or end_is_tip),
-                P_plot=P_plot * sxy,
-                J_plot=J_plot * sxy,   # J has length units
-            ))
+            # Apply units
+            P_plot = P_plot * sxy
+            J_plot = J_plot * sxy
 
-        # 2) Stitch or trim at junctions depending on junction_model.
-        if junction_model == "strict":
-            # Build incident map vid -> list of (poly_index, end, J_endpoint)
-            inc: dict[int, list[tuple[int, str, np.ndarray]]] = {}
-            for i, pd in enumerate(poly_data):
-                # IMPORTANT: Do not apply constant gauge shifts to any polyline that
-                # terminates at a deg-1 tip. A constant shift would generally destroy
-                # the physical boundary condition J(tip)=0 and visually "open" the tip.
-                #
-                # In typical networks (junction-to-tip branches), the solver already
-                # enforces both junction constraints and tip constraints, so no stitching
-                # should be required for these polylines.
-                if pd.get("has_tip", False):
-                    continue
-                sv, ev = pd["start_vid"], pd["end_vid"]
-                if sv >= 0 and deg.get(sv, 0) > 1:
-                    inc.setdefault(sv, []).append((i, "start", pd["J_plot"][0].copy()))
-                if ev >= 0 and deg.get(ev, 0) > 1:
-                    inc.setdefault(ev, []).append((i, "end", pd["J_plot"][-1].copy()))
+            # Deformed faces and midline
+            U = P_plot + 0.5 * scale * J_plot
+            L = P_plot - 0.5 * scale * J_plot
 
-            # For each junction vertex, align all incident polylines by constant shift
-            for vid, items in inc.items():
-                if len(items) < 2:
-                    continue
-                Jref = np.mean(np.stack([it[2] for it in items], axis=0), axis=0)
-                for (i, endflag, Jend) in items:
-                    delta = (Jref - Jend).reshape(1, 2)
-                    poly_data[i]["J_plot"] = poly_data[i]["J_plot"] + delta
-
-        # Build crack faces and (optionally) apply core-junction trimming.
-        # - If junction_model=="core" and trim_core_junction_faces==True, we trim faces at
-        #   multi-branch junctions (degree >= 3) using local face intersections.
-        # - Otherwise, we use a simple index-based trim near deg>1 vertices.
-        trim_n = max(2, int(0.02 * int(n_pts_per_edge)))
-
-        # Precompute faces for all polylines (full arrays); we may modify them in-place.
-        for pd in poly_data:
-            Pp = pd["P_plot"]
-            Jp = pd["J_plot"]
-            pd["U_plot"] = Pp + 0.5 * scale * Jp
-            pd["L_plot"] = Pp - 0.5 * scale * Jp
-
-        gap_polys: list[np.ndarray] = []
-
-        if junction_model == "core" and trim_core_junction_faces and (trim_faces_at_junction is not None) and (BranchFaces is not None):
-            # Build vertex -> incident map with orientation info.
-            inc: dict[int, list[tuple[int, bool]]] = {}
-            for i, pd in enumerate(poly_data):
-                sv, ev = pd["start_vid"], pd["end_vid"]
-                if sv >= 0 and deg.get(sv, 0) > 2:
-                    inc.setdefault(sv, []).append((i, True))   # True: start_at_vertex
-                if ev >= 0 and deg.get(ev, 0) > 2:
-                    inc.setdefault(ev, []).append((i, False))  # False: end_at_vertex
-
-            # Trim per junction vertex.
-            for vid, items in inc.items():
-                if len(items) < 3:
-                    continue
-                try:
-                    vxy = np.asarray(net.vertex_coords(int(vid)), float).reshape(2,) * sxy
-                except Exception:
-                    continue
-
-                branches = []
-                # Map pid -> orientation (start_at_vertex)
-                orient = {}
-                for (i, start_at_vertex) in items:
-                    pd = poly_data[i]
-                    Pp = pd["P_plot"]
-                    Up = pd["U_plot"]
-                    Lp = pd["L_plot"]
-                    if start_at_vertex:
-                        branches.append(BranchFaces(pid=i, P=Pp, U=Up, L=Lp, start_at_vertex=True))
-                        orient[i] = True
-                    else:
-                        branches.append(BranchFaces(pid=i, P=Pp[::-1].copy(), U=Up[::-1].copy(), L=Lp[::-1].copy(), start_at_vertex=True))
-                        orient[i] = False
-
-                trimmed, gap_pts = trim_faces_at_junction(
-                    vxy,
-                    branches,
-                    look_ahead=int(trim_junction_look_ahead),
-                    search_segments=int(trim_junction_search_segments),
-                )
-                if show_junction_gap and gap_pts is not None and getattr(gap_pts, "size", 0) > 0:
-                    gap_polys.append(np.asarray(gap_pts, float))
-
-                # Write back trimmed faces, restoring original orientation where needed.
-                for b in trimmed:
-                    i = int(b.pid)
-                    if orient.get(i, True):  # start_at_vertex
-                        poly_data[i]["U_plot"] = b.U
-                        poly_data[i]["L_plot"] = b.L
-                    else:
-                        poly_data[i]["U_plot"] = b.U[::-1].copy()
-                        poly_data[i]["L_plot"] = b.L[::-1].copy()
-
-        # Draw polylines
-        for pd in poly_data:
-            Pp = pd["P_plot"]
-            Up = pd["U_plot"]
-            Lp = pd["L_plot"]
-
-            # Simple trim option (used when not doing geometric core trimming)
-            if junction_model == "core" and not trim_core_junction_faces:
-                i0, i1 = 0, len(Pp)
-                if pd["start_vid"] >= 0 and pd["start_deg"] > 1:
-                    i0 = min(i0 + trim_n, i1 - 2)
-                if pd["end_vid"] >= 0 and pd["end_deg"] > 1:
-                    i1 = max(i1 - trim_n, i0 + 2)
-                Pp = Pp[i0:i1]
-                Up = Up[i0:i1]
-                Lp = Lp[i0:i1]
-
-            ax.plot(Pp[:, 0], Pp[:, 1], "k--", lw=1.0, alpha=0.55)
+            # plot
+            ax.plot(P_plot[:, 0], P_plot[:, 1], "k--", lw=1.0, alpha=0.55)
             if show_faces:
-                ax.plot(Up[:, 0], Up[:, 1], lw=1.6)
-                ax.plot(Lp[:, 0], Lp[:, 1], lw=1.6)
+                ax.plot(U[:, 0], U[:, 1], lw=1.6)
+                ax.plot(L[:, 0], L[:, 1], lw=1.6)
+
+            all_pts.append(P_plot)
+            all_pts.append(U)
+            all_pts.append(L)
 
             n_plotted += 1
 
-        if show_junction_gap and gap_polys:
-            for gp in gap_polys:
-                if gp.ndim == 2 and gp.shape[0] >= 3:
-                    # close polygon
-                    gpc = np.vstack([gp, gp[0:1]])
-                    ax.plot(gpc[:, 0], gpc[:, 1], "k-", lw=1.0, alpha=0.35)
-# Styling: match network graph look (limits from graph, not from deformation)
+        # Finish styling
         ax.set_title(f"Deformed Crack Network (junction_model={junction_model}, scale={float(scale):.2e})")
         ax.set_xlabel(f"x [{units}]")
         ax.set_ylabel(f"y [{units}]")
-        ax.grid(True, alpha=0.35)
-        _set_graph_like_limits(ax, Vc * sxy if Vc.size else None)
+        ax.grid(True, alpha=0.25)
+
+        # Match the network-graph axes/limits (do not auto-scale to deformed faces)
+        if Vc is not None and np.asarray(Vc).size:
+            _set_graph_like_limits(ax, np.asarray(Vc, float) * sxy)
+        elif all_pts:
+            _set_graph_like_limits(ax, np.vstack(all_pts))
 
         if debug_counts:
             ax.text(0.02, 0.98, f"plotted={n_plotted}, skipped={n_skipped}",
                     transform=ax.transAxes, va="top", ha="left", fontsize=9)
 
         if save:
-            if self.out_dir is None:
-                raise ValueError("out_dir must be set to save figures.")
             self.out_dir.mkdir(parents=True, exist_ok=True)
             fig.savefig(self.out_dir / "deformed_network.png", dpi=200, bbox_inches="tight")
         if show:
             plt.show()
         return fig, ax
+
 
 # -----------------------------------------------------------------------------

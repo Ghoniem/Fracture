@@ -26,15 +26,15 @@ from .material import Material, AppliedStress
 from .network import CrackNetworkV4
 from .KKT import solve_kkt_lsq
 
-from .build import (
+from .build_v4 import (
     vertex_degrees,
     build_polylines_full,
     build_polylines_half_branches,
     discretize_polylines,
     assemble_operator,
     allocate_unknowns,
-
-    make_cspline_polyline_from_path,)
+    make_cspline_polyline_from_path,
+)
 
 from .constraints import (
     build_constraints_full,
@@ -73,7 +73,7 @@ class DCENetworkStaticV4:
         opt = str(solver_option).lower().strip()
         if opt not in ("parametrized_crack", "parameterized_crack", "param_crack"):
             raise ValueError("v4 solver supports solver_option='parametrized_crack' only.")
-        if str(parametrization).lower().strip() not in ("polyline", "segmented", "kinked", "cspline", "cubic_spline"):
+        if str(parametrization).lower().strip() not in ("polyline", "segmented", "kinked", "cspline", "cubic_spline", "mixed", "arc"):
             raise ValueError("v4 solver currently supports parametrization='polyline' only.")
 
         rep_in = str(representation).lower().strip()
@@ -95,10 +95,10 @@ class DCENetworkStaticV4:
             raise ValueError(f"Unknown node_distribution={node_distribution!r}. Use 'uniform' or 'tip_dense'.")
 
         crack_mode = str(crack_mode).lower().strip()
+        param_kind = str(parametrization).lower().strip()
+
         if crack_mode not in ("full", "half"):
             raise ValueError("crack_mode must be 'full' or 'half'.")
-
-        param_kind = str(parametrization).lower().strip()
 
         # Junction model for half mode:
 
@@ -132,7 +132,10 @@ class DCENetworkStaticV4:
         # Discretize polylines and assemble operator
         # ------------------------------------------------------------
         # Convert polyline components to interpolating cubic splines (through vertices)
-        if param_kind in ("cspline", "cubic_spline"):
+        # - cspline/cubic_spline: convert ALL polyline components with >=3 vertices
+        # - mixed: convert ONLY those whose endpoint key is mapped to 'cspline' in branch_param
+        branch_param = _ignored.get("branch_param", None)
+        if param_kind in ("cspline", "cubic_spline", "mixed"):
             new_polylines = []
             for meta in polylines:
                 if str(meta.get("kind", "polyline")).lower() != "polyline":
@@ -143,6 +146,18 @@ class DCENetworkStaticV4:
                 if len(vids_path) < 3:
                     new_polylines.append(meta)
                     continue
+
+                if param_kind == "mixed":
+                    v0 = int(meta.get("v_start", vids_path[0]))
+                    v1 = int(meta.get("v_end", vids_path[-1]))
+                    key = (min(v0, v1), max(v0, v1))
+                    mode = None
+                    if isinstance(branch_param, dict):
+                        mode = branch_param.get(key, branch_param.get((v0, v1), None))
+                    if str(mode).lower().strip() not in ("cspline", "cubic_spline"):
+                        new_polylines.append(meta)
+                        continue
+
                 pts = np.array([self.network.vertex_coords(v) for v in vids_path], float)
                 new_polylines.append(
                     make_cspline_polyline_from_path(
@@ -329,7 +344,7 @@ class DCENetworkStaticV4:
         sol = dict(
             representation=rep_in,
             solver_option="parametrized_crack",
-            parametrization="polyline",
+            parametrization=param_kind,
             ne_half=int(ne_half),
             node_distribution=dist_in,
             collocation_mode=collocation_mode,
