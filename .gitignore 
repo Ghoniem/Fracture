@@ -1,0 +1,84 @@
+# Python virtual environment
+venv_fracture/
+venv_env/
+# =========================
+# Python virtual environments
+# =========================
+venv/
+.env/
+.venv/
+env/
+
+# =========================
+# Python cache / bytecode
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# =========================
+# Jupyter
+# =========================
+.ipynb_checkpoints/
+
+# =========================
+# Build artifacts
+# =========================
+build/
+dist/
+*.egg-info/
+
+# =========================
+# Test / coverage
+# =========================
+.coverage
+htmlcov/
+.pytest_cache/
+
+# =========================
+# Logs
+# =========================
+*.log
+
+# =========================
+# OS files (macOS)
+# =========================
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# =========================
+# IDEs / Editors
+# =========================
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# =========================
+# C / C++ build artifacts (relevant for fracture solvers)
+# =========================
+*.o
+*.so
+*.dylib
+*.a
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+Makefile
+compile_commands.json
+
+# =========================
+# Temporary / scratch
+# =========================
+tmp/
+temp/
+scratch/
+
+# =========================
+# Data outputs (adjust if needed)
+# =========================
+*.npy
+*.npz
+*.h5
+*.hdf5
