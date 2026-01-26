@@ -52,15 +52,11 @@ def enable_autoreload():
 from fracture_utils.Ugenerator.network_gen import CrackNetworkGenerator
 
 from fracture_utils.Usolver.network import CrackNetworkV4 as CrackNetworkV4
-# _base
-# CrackNetworkV4 = CrackNetworkV4_base  # Alias for consistency
 from fracture_utils.Usolver.parametrization_v5_cod import DCENetworkStaticV4  # type: ignore
 import fracture_utils.Usolver.build_v4 as build
-
 from fracture_utils.Usolver.material import Material, AppliedStress
 
-
-from fracture_utils.Uprocessor.results_v1 import DCEResultsNetworkV4
+from fracture_utils.Uprocessor.results_v1_PATHIND_updated import DCEResultsNetworkV4
 from fracture_utils.Uprocessor import diagnostics as diagnostics
 
 # ------------------------------------------------------------
@@ -69,14 +65,18 @@ from fracture_utils.Uprocessor import diagnostics as diagnostics
 from fracture_utils.Uplotter.core import DCEPlotterV4
 from fracture_utils.Uplotter.plot_stress import StressPlotOptsV4
 from fracture_utils.Uplotter.plot_displacement import DCEPlotterDisplacementV4
-
 # Deformed network plotter (new filename)
 from fracture_utils.Uplotter.plot_deformed_network import DCEPlotterDeformedV4 as DCEPlotterDeformedV4
-
-
-
 # PK and B-content plotter
 from fracture_utils.Uplotter.plot_PK import DCEPlotterPK, VecPlotStyle
+
+
+#---------------------------------------------------------
+# Validation
+#--------------------------------------------------------
+from fracture_utils.UValidation.validation_cod import *
+from fracture_utils.UValidation.validation_sif import *
+
 
 __all__ = [
     # numpy/mpl basics
@@ -103,4 +103,10 @@ __all__ = [
     "DCEPlotterDeformedV4",
     "DCEPlotterPK",
     "VecPlotStyle",
+    
+    # Validation 
+    "CODSweepResult",
+    "SIFSweepResult",
+    "run_cod_sweep", "plot_cod_overlay", "plot_cod_error_vs_knob",
+    "run_sif_sweep", "plot_sif_error_vs_knob", "plot_sif_estimators_overlay", "SIFMeasures",
 ]

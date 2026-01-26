@@ -21,30 +21,16 @@ F_PK:
     not required for plotting deformed geometry.
 """
 
-# from __future__ import annotations
-
-# from dataclasses import dataclass
-# from typing import Dict, List, Optional, Tuple, Any
-# from ..Uprocessor import *  
-# from ..Uplotter.reconstruct import *
-
-# import numpy as np, math
-# from typing import Tuple, Optional
 from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Any
+from ..Uprocessor import *  
+from ..Uplotter.reconstruct import *
 
 import numpy as np, math
+from typing import Tuple, Optional
 
-# --- Allow both package import and direct execution / file loading ---
-try:
-    # normal package import
-    from ..Uprocessor import *                 # noqa: F401,F403
-    from ..Uplotter.reconstruct import *       # noqa: F401,F403
-except ImportError:
-    # fallback when run as a script / loaded by filepath
-    from fracture_utils.Uprocessor import *    # noqa: F401,F403
-    from fracture_utils.Uplotter.reconstruct import *  # noqa: F401,F403
 
 def _as2(v) -> np.ndarray:
     return np.asarray(v, float).reshape(2,)
@@ -508,148 +494,81 @@ class PKProcessor:
     def F_PK_window(
         self,
         edge_index: int,
-        *,
         at: str = "end",
         exclude_self: bool = True,
         window_panels: int = 6,
         window_frac: float = 0.1,
         min_panels: int = 6,
-    ) -> Optional[np.ndarray]:
-        """Method (2): window-integrated PK estimate near the selected tip.
-
-        Definition
-        ----------
-            F_PK_window = Σ_{k in window} (σ_tot(x_k) · ΔB_k) × e_z
-
-        Window selection (panel-count first)
-        -----------------------------------
-        Priority order:
-        1) If `window_panels` is not None: select exactly that many panels closest to the chosen tip.
-        2) Else: select panels satisfying r_k <= window_frac * L_edge, and enforce at least `min_panels`.
-
-        Notes
-        -----
-        - Default `min_panels=6` is recommended for robustness on coarse meshes.
-        - Default `window_frac=0.1` remains available and caller-adjustable.
+        **_ignored,
+    ):
         """
-        edge_index = int(edge_index)
-        at = str(at).lower().strip()
-        if at not in ("start", "end"):
-            at = "end"
-
-        if not hasattr(self.res, "reconstruct_cod_csd_panel_midpoints"):
-            return None
-
-        try:
-            x_mid, COD_mid, CSD_mid, extra = self.res.reconstruct_cod_csd_panel_midpoints(
-                edge_index=edge_index,
-                enforce_global_tip_zero=False,
-            )
-        except Exception:
-            return None
-
-        extra = dict(extra) if isinstance(extra, dict) else {}
-        bI = np.asarray(extra.get("bI", []), float).reshape(-1,)
-        bII = np.asarray(extra.get("bII", []), float).reshape(-1,)
-        xy = np.asarray(extra.get("xy_mid", []), float)
-        if bI.size == 0 or xy.ndim != 2 or xy.shape[0] != bI.size:
-            return None
-
-        pid = int(extra.get("pid", -1))
-        sol = self.sol if isinstance(self.sol, dict) else {}
-        solps = sol.get("polyline_solutions", [])
-        if pid < 0 or pid >= len(solps):
-            return None
-        solp = dict(solps[pid])
-
-        # Align ds/t/n with the edge-segment panels via s_mid
-        s_mid_e = np.asarray(extra.get("s_mid", []), float).reshape(-1,)
-        s_mid_all = np.asarray(solp.get("s_mid", []), float).reshape(-1,)
-        if s_mid_all.size and s_mid_e.size:
-            ds_guess = np.nanmedian(np.diff(np.sort(s_mid_all))) if s_mid_all.size > 3 else None
-            tol = float(ds_guess * 0.51) if ds_guess and np.isfinite(ds_guess) else 1e-12
-            mask = np.zeros_like(s_mid_all, dtype=bool)
-            for sv in s_mid_e:
-                mask |= np.abs(s_mid_all - float(sv)) <= tol
-        else:
-            mask = slice(None)
-
-        ds_all = np.asarray(solp.get("ds", []), float).reshape(-1,)
-        t_all = np.asarray(solp.get("t_mid", solp.get("t_col", [])), float)
-        n_all = np.asarray(solp.get("n_mid", solp.get("n_col", [])), float)
-
-        if isinstance(mask, slice):
-            ds = ds_all; t = t_all; n = n_all
-        else:
-            ds = ds_all[mask]; t = t_all[mask]; n = n_all[mask]
-
-        if ds.size != bI.size or t.shape[0] != bI.size or n.shape[0] != bI.size:
-            return None
-
-        a_edge = float(extra.get("a_edge", 0.0))
-        L_edge = 2.0 * a_edge
-        if L_edge <= 0:
-            return None
-
-        xloc = np.asarray(x_mid, float).reshape(-1,)
-        if xloc.size != bI.size:
-            xloc = np.linspace(-a_edge, a_edge, bI.size)
-
-        # Distance from the selected tip
-        if at == "end":
-            r = a_edge - xloc
-        else:
-            r = a_edge + xloc
-        r = np.asarray(r, float)
-        if r.size != bI.size:
-            return None
-
-        # --- Window selection ---
-        N = int(bI.size)
-        order = np.argsort(r)  # increasing distance from tip
-
-        if window_panels is not None:
-            # Panel-count window (preferred)
-            take = int(window_panels)
-            if take <= 0:
-                return None
-            take = min(take, N)
-            idxs = order[:take]
-        else:
-            # Fraction-based window + enforce min_panels
-            wlen = max(float(window_frac) * L_edge, 0.0)
-            mwin = (r >= 0.0) & (r <= wlen + 1e-15) & np.isfinite(r)
-            if int(np.count_nonzero(mwin)) < int(min_panels):
-                take = min(max(int(min_panels), 1), N)
-                idxs = order[:take]
-            else:
-                idxs = np.where(mwin)[0]
-
-        # Stress evaluator
-        stress_excl = getattr(self.res, "stress_field_global_excluding", None)
-        stress_tot = getattr(self.res, "stress_field_global", None)
-
-        if exclude_self:
-            if not callable(stress_excl):
-                return None
-            def sigma_at(xx, yy):
-                return stress_excl(edge_index, xx, yy, add_remote=True)
-        else:
-            if not callable(stress_tot):
-                return None
-            def sigma_at(xx, yy):
-                return stress_tot(xx, yy, add_remote=True)
-
-        # Integrate window PK contributions
-        F = np.zeros(2, float)
-        for k in np.asarray(idxs, int):
-            dB = (bII[k] * t[k] + bI[k] * n[k]) * float(ds[k])
-            sxx, syy, sxy = sigma_at(np.array([xy[k, 0]]), np.array([xy[k, 1]]))
-            sig = np.array([[float(sxx[0]), float(sxy[0])], [float(sxy[0]), float(syy[0])]], float)
-            F += self.pk_force_density_from_stress(sig, dB)
-        return F
+        Compute Peach–Koehler force over a window near a crack tip.
     
+        IMPORTANT:
+        Excludes ONLY the self panel and its immediate neighbors when
+        exclude_self=True. Does NOT exclude the entire crack polyline.
+        """
+        res = self.res
+        sol = res.sol
 
+        e2p = sol.get("parametrized_edge_to_polyline", {})
+        if edge_index not in e2p:
+            return None
+        pid = int(e2p[edge_index])
+
+        poly = sol["polyline_solutions"][pid]
+
+        xmid = np.asarray(poly["x_col"], float)
+        t = np.asarray(poly["t_col"], float)
+        n = np.asarray(poly["n_col"], float)
+        ds = np.asarray(poly["ds"], float)
+        bI = np.asarray(poly["bI"], float)
+        bII = np.asarray(poly["bII"], float)
+
+        N = len(ds)
+        if N == 0:
+            return None
+
+        if at == "end":
+            idxs = np.arange(max(0, N - window_panels), N)
+        else:
+            idxs = np.arange(0, min(window_panels, N))
+
+        F = np.zeros(2, float)
+
+        for k in idxs:
+            dB = (bII[k] * t[k] + bI[k] * n[k]) * ds[k]
+
+            if exclude_self:
+                skip = {k}
+                if k - 1 >= 0:
+                    skip.add(k - 1)
+                if k + 1 < N:
+                    skip.add(k + 1)
+
+                sxx, syy, sxy = res.stress_field_global_excluding_panels(
+                    pid,
+                    skip,
+                    np.array([xmid[k, 0]]),
+                    np.array([xmid[k, 1]]),
+                    add_remote=True,
+                )
+            else:
+                sxx, syy, sxy = res.stress_field_global(
+                    np.array([xmid[k, 0]]),
+                    np.array([xmid[k, 1]]),
+                    add_remote=True,
+                )
+
+            sig = np.array(
+                [[float(sxx[0]), float(sxy[0])],
+                 [float(sxy[0]), float(syy[0])]],
+                float,
+            )
+
+            F += self.pk_force_density_from_stress(sig, dB)
+
+        return F
     @staticmethod
     def kink_angle_from_K(
         KI: float,
@@ -756,209 +675,83 @@ class PKProcessor:
         else:
             raise ValueError(f"Unknown criterion='{criterion}'. Use 'max_hoop' or 'sed'.")
 
-    # def kink_angle_from_PK_window(
-    #     self,
-    #     edge_index: int,
-    #     *,
-    #     at: str = "end",
-    #     window_panels: int = 6,
-    #     window_frac: float = 0.1,     # fallback if window_panels is ignored
-    #     exclude_self: bool = True,
-    #     plane_strain: bool = False,
-    #     criterion: str = "max_hoop",
-    #     return_degrees: bool = True,
-    # ):
-    #     """
-    #     Compute crack propagation (kink) angle using:
+    def kink_angle_from_PK_window(
+        self,
+        edge_index: int,
+        *,
+        at: str = "end",
+        window_panels: int = 6,
+        window_frac: float = 0.1,     # fallback if window_panels is ignored
+        exclude_self: bool = True,
+        plane_strain: bool = False,
+        criterion: str = "max_hoop",
+        return_degrees: bool = True,
+    ):
+        """
+        Compute crack propagation (kink) angle using:
 
-    #         F_PK_window -> (J1,J2) -> (KI,KII) -> kink criterion
+            F_PK_window -> (J1,J2) -> (KI,KII) -> kink criterion
 
-    #     Returns
-    #     -------
-    #     theta : float
-    #         Kink angle measured from the local crack tangent.
-    #     KI, KII : float
-    #         Stress intensity factors used for the criterion.
-    #     meta : dict
-    #         Diagnostics (Ft, Fn, J1, J2, Eprime, etc.)
-    #     """
+        Returns
+        -------
+        theta : float
+            Kink angle measured from the local crack tangent.
+        KI, KII : float
+            Stress intensity factors used for the criterion.
+        meta : dict
+            Diagnostics (Ft, Fn, J1, J2, Eprime, etc.)
+        """
 
-    #     # -------------------------------
-    #     # 1) Compute PK-window force
-    #     # -------------------------------
-    #     try:
-    #         F = self.F_PK_window(
-    #             edge_index=edge_index,
-    #             at=at,
-    #             exclude_self=exclude_self,
-    #             window_panels=window_panels,
-    #             window_frac=window_frac,
-    #         )
-    #     except TypeError:
-    #         # backward compatibility if F_PK_window has no window_panels
-    #         F = self.F_PK_window(
-    #             edge_index=edge_index,
-    #             at=at,
-    #             exclude_self=exclude_self,
-    #             window_frac=window_frac,
-    #         )
+        # -------------------------------
+        # 1) Compute PK-window force
+        # -------------------------------
+        try:
+            F = self.F_PK_window(
+                edge_index=edge_index,
+                at=at,
+                exclude_self=exclude_self,
+                window_panels=window_panels,
+                window_frac=window_frac,
+            )
+        except TypeError:
+            # backward compatibility if F_PK_window has no window_panels
+            F = self.F_PK_window(
+                edge_index=edge_index,
+                at=at,
+                exclude_self=exclude_self,
+                window_frac=window_frac,
+            )
 
-    #     if F is None:
-    #         return None
+        if F is None:
+            return None
 
-    #     F = np.asarray(F, float).reshape(2,)
+        F = np.asarray(F, float).reshape(2,)
 
-    #     # -------------------------------
-    #     # 2) Local crack frame
-    #     # -------------------------------
-    #     _, _, _, extra = self.res.reconstruct_cod_csd_panel_midpoints(
-    #         edge_index=edge_index,
-    #         enforce_global_tip_zero=False,
-    #     )
-    #     extra = dict(extra)
-
-    #     ex = np.asarray(extra["ex"], float).reshape(2,)   # tangent
-    #     ey = np.asarray(extra["ey"], float).reshape(2,)   # normal
-
-    #     Ft = float(np.dot(F, ex))   # J1
-    #     Fn = float(np.dot(F, ey))   # J2
-
-    #     # -------------------------------
-    #     # 3) Convert (J1,J2) -> (KI,KII)
-    #     # -------------------------------
-    #     E  = float(self.res.calc.material.E)
-    #     nu = float(self.res.calc.material.nu)
-    #     Eprime = E / (1.0 - nu**2) if plane_strain else E
-
-    #     J1 = Ft
-    #     J2 = Fn
-
-    #     A = Eprime * J1                # KI^2 + KII^2
-    #     C = -0.5 * Eprime * J2         # KI*KII   (sign convention)
-
-    #     disc = A*A - 4.0*C*C
-    #     disc = max(disc, 0.0)
-    #     D = float(np.sqrt(disc))
-
-    #     KI2  = 0.5 * (A + D)
-    #     KII2 = 0.5 * (A - D)
-    #     KI2  = max(KI2,  0.0)
-    #     KII2 = max(KII2, 0.0)
-
-    #     KI  = float(np.sqrt(KI2))
-    #     KII = float(np.sign(C) * np.sqrt(KII2))   # KI ≥ 0 by convention
-
-    #     # -------------------------------
-    #     # 4) Kink angle from criterion
-    #     # -------------------------------
-    #     theta = self.kink_angle_from_K(
-    #         KI, KII,
-    #         criterion=criterion,
-    #         return_degrees=return_degrees,
-    #     )
-
-    #     meta = dict(
-    #         F_global=F,
-    #         Ft=Ft, Fn=Fn,
-    #         J1=J1, J2=J2,
-    #         Eprime=Eprime,
-    #         KI=KI, KII=KII,
-    #         window_panels=window_panels,
-    #         window_frac=window_frac,
-    #         exclude_self=exclude_self,
-    #         plane_strain=plane_strain,
-    #         criterion=criterion,
-    #         edge_index=edge_index,
-    #         at=at,
-    #     )
-
-    #     return theta, KI, KII, meta
-
-
-def kink_angle_from_PK_window(
-    self,
-    edge_index: int,
-    *,
-    at: str = "end",
-    window_panels: int = 6,
-    window_frac: float = 0.1,     # fallback if window_panels is ignored
-    exclude_self: bool = True,
-    plane_strain: bool = False,   # retained for backward compatibility (ignored)
-    criterion: str = "max_hoop",
-    return_degrees: bool = True,
-    mode_I_only: bool = False,    # NEW: robust for pure Mode I validation
-):
-    """
-    Compute crack propagation (kink) angle using:
-
-        F_PK_window -> (J1,J2) -> (KI,KII) -> kink criterion
-
-    Notes
-    -----
-    - The plane stress/strain choice is taken from self.res.calc.material (authoritative),
-      not from the plane_strain argument, to prevent inconsistent conversions.
-    - For pure Mode I benchmarks, set mode_I_only=True to reduce sensitivity to noisy J2.
-    """
-
-    # -------------------------------
-    # 1) Compute PK-window force
-    # -------------------------------
-    try:
-        F = self.F_PK_window(
+        # -------------------------------
+        # 2) Local crack frame
+        # -------------------------------
+        _, _, _, extra = self.res.reconstruct_cod_csd_panel_midpoints(
             edge_index=edge_index,
-            at=at,
-            exclude_self=exclude_self,
-            window_panels=window_panels,
-            window_frac=window_frac,
+            enforce_global_tip_zero=False,
         )
-    except TypeError:
-        # backward compatibility if F_PK_window has no window_panels
-        F = self.F_PK_window(
-            edge_index=edge_index,
-            at=at,
-            exclude_self=exclude_self,
-            window_frac=window_frac,
-        )
+        extra = dict(extra)
 
-    if F is None:
-        return None
+        ex = np.asarray(extra["ex"], float).reshape(2,)   # tangent
+        ey = np.asarray(extra["ey"], float).reshape(2,)   # normal
 
-    F = np.asarray(F, float).reshape(2,)
+        Ft = float(np.dot(F, ex))   # J1
+        Fn = float(np.dot(F, ey))   # J2
 
-    # -------------------------------
-    # 2) Local crack frame
-    # -------------------------------
-    _, _, _, extra = self.res.reconstruct_cod_csd_panel_midpoints(
-        edge_index=edge_index,
-        enforce_global_tip_zero=False,
-    )
-    extra = dict(extra)
+        # -------------------------------
+        # 3) Convert (J1,J2) -> (KI,KII)
+        # -------------------------------
+        E  = float(self.res.calc.material.E)
+        nu = float(self.res.calc.material.nu)
+        Eprime = E / (1.0 - nu**2) if plane_strain else E
 
-    ex = np.asarray(extra["ex"], float).reshape(2,)   # tangent
-    ey = np.asarray(extra["ey"], float).reshape(2,)   # normal
+        J1 = Ft
+        J2 = Fn
 
-    Ft = float(np.dot(F, ex))   # interpret as J1
-    Fn = float(np.dot(F, ey))   # interpret as J2
-
-    # -------------------------------
-    # 3) Convert (J1,J2) -> (KI,KII)
-    # -------------------------------
-    E  = float(self.res.calc.material.E)
-    nu = float(self.res.calc.material.nu)
-
-    # Authoritative plane stress/strain from the material used in the solve
-    plane_stress = bool(getattr(self.res.calc.material, "plane_stress", False))
-    Eprime = E if plane_stress else (E / (1.0 - nu**2))
-
-    J1 = Ft
-    J2 = Fn
-
-    if mode_I_only:
-        # Robust for pure Mode I benchmarks: KI = sqrt(E' * J1), KII = 0
-        KI = float(np.sqrt(max(Eprime * J1, 0.0)))
-        KII = 0.0
-    else:
-        # General mixed-mode inversion
         A = Eprime * J1                # KI^2 + KII^2
         C = -0.5 * Eprime * J2         # KI*KII   (sign convention)
 
@@ -974,31 +767,28 @@ def kink_angle_from_PK_window(
         KI  = float(np.sqrt(KI2))
         KII = float(np.sign(C) * np.sqrt(KII2))   # KI ≥ 0 by convention
 
-    # -------------------------------
-    # 4) Kink angle from criterion
-    # -------------------------------
-    theta = self.kink_angle_from_K(
-        KI, KII,
-        criterion=criterion,
-        return_degrees=return_degrees,
-    )
+        # -------------------------------
+        # 4) Kink angle from criterion
+        # -------------------------------
+        theta = self.kink_angle_from_K(
+            KI, KII,
+            criterion=criterion,
+            return_degrees=return_degrees,
+        )
 
-    meta = dict(
-        F_global=F,
-        Ft=Ft, Fn=Fn,
-        J1=J1, J2=J2,
-        Eprime=Eprime,
-        plane_stress=plane_stress,
-        KI=KI, KII=KII,
-        window_panels=window_panels,
-        window_frac=window_frac,
-        exclude_self=exclude_self,
-        plane_strain_arg=plane_strain,  # record what caller passed, but not used
-        mode_I_only=mode_I_only,
-        criterion=criterion,
-        edge_index=edge_index,
-        at=at,
-    )
+        meta = dict(
+            F_global=F,
+            Ft=Ft, Fn=Fn,
+            J1=J1, J2=J2,
+            Eprime=Eprime,
+            KI=KI, KII=KII,
+            window_panels=window_panels,
+            window_frac=window_frac,
+            exclude_self=exclude_self,
+            plane_strain=plane_strain,
+            criterion=criterion,
+            edge_index=edge_index,
+            at=at,
+        )
 
-    return theta, KI, KII, meta
-
+        return theta, KI, KII, meta
