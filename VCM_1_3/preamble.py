@@ -47,12 +47,27 @@ def enable_autoreload():
         pass
 
 # ------------------------------------------------------------
-# Core solver / generator / processor imports
+# Generator imports - Now simplified using __init__.py
 # ------------------------------------------------------------
-#from fracture_utils.Ugenerator.network_gen import CrackNetworkGenerator
-from fracture_utils.Ugenerator.crack_network_generator_v1 import CrackNetworkGenerator
+from fracture_utils.Ugenerator import (
+    CrackNetworkGenerator,
+    GeometryUtils,
+    NetworkAnalyzer,
+    NetworkVisualizer,
+    Boundary,
+    BoundarySegment,
+    LinearSegment,
+    CircularArc,
+    BoundaryManager,
+    CADImporter,
+    CADExporter,
+    BezierCurve,
+    SplineCurve
+)
 
-
+# ------------------------------------------------------------
+# Solver imports
+# ------------------------------------------------------------
 from fracture_utils.Usolver.network import CrackNetworkV4 as CrackNetworkV4
 from fracture_utils.Usolver.parametrization import DCENetworkStaticV4  # type: ignore
 import fracture_utils.Usolver.build as build
@@ -62,20 +77,17 @@ from fracture_utils.Uprocessor.results import DCEResultsNetworkV4
 from fracture_utils.Uprocessor import diagnostics as diagnostics
 
 # ------------------------------------------------------------
-# Plotter imports (reflecting your Uplotter structure)
+# Plotter imports
 # ------------------------------------------------------------
 from fracture_utils.Uplotter.core import DCEPlotterV4
 from fracture_utils.Uplotter.plot_stress import StressPlotOptsV4
 from fracture_utils.Uplotter.plot_displacement import DCEPlotterDisplacementV4
-# Deformed network plotter (new filename)
 from fracture_utils.Uplotter.plot_deformed_network import DCEPlotterDeformedV4 as DCEPlotterDeformedV4
-# PK and B-content plotter
 from fracture_utils.Uplotter.plot_PK import DCEPlotterPK, VecPlotStyle
 
-
-#---------------------------------------------------------
+# ------------------------------------------------------------
 # Validation
-#--------------------------------------------------------
+# ------------------------------------------------------------
 from fracture_utils.UValidation.validation_cod import *
 from fracture_utils.UValidation.validation_sif import *
 
@@ -88,18 +100,30 @@ __all__ = [
     "REPO_ROOT",
     "enable_autoreload",
 
-    # generator / solver / results
+    # Generator (from Ugenerator.__init__)
     "CrackNetworkGenerator",
+    "GeometryUtils",
+    "NetworkAnalyzer",
+    "NetworkVisualizer",
+    "Boundary",
+    "BoundarySegment",
+    "LinearSegment",
+    "CircularArc",
+    "BoundaryManager",
+    "CADImporter",
+    "CADExporter",
+    "BezierCurve",
+    "SplineCurve",
+    
+    # Solver / results
     "CrackNetworkV4",
     "Material",
     "AppliedStress",
     "DCENetworkStaticV4",
     "DCEResultsNetworkV4",
-
-    # diagnostics module (namespace)
     "diagnostics",
 
-    # plotters / opts
+    # Plotters
     "DCEPlotterV4",
     "StressPlotOptsV4",
     "DCEPlotterDeformedV4",
@@ -109,6 +133,11 @@ __all__ = [
     # Validation 
     "CODSweepResult",
     "SIFSweepResult",
-    "run_cod_sweep", "plot_cod_overlay", "plot_cod_error_vs_knob",
-    "run_sif_sweep", "plot_sif_error_vs_knob", "plot_sif_estimators_overlay", "SIFMeasures",
+    "run_cod_sweep", 
+    "plot_cod_overlay", 
+    "plot_cod_error_vs_knob",
+    "run_sif_sweep", 
+    "plot_sif_error_vs_knob", 
+    "plot_sif_estimators_overlay", 
+    "SIFMeasures",
 ]

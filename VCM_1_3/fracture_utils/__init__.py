@@ -4,7 +4,7 @@ Fracture Mechanics Utilities Package
 """
 
 # Import from Ugenerator
-from .Ugenerator.network_gen import CrackNetworkGenerator
+# from .Ugenerator.network_gen import CrackNetworkGenerator
 
 # # Import Usolver submodules directly (not through Usolver.__init__)
 # from .Usolver.build import *
