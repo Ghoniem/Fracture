@@ -274,7 +274,7 @@ class DCEPlotterDeformedV4:
         trim_junction_search_segments: int = 10,
         show_junction_gap: bool = False,
         show: bool = True,
-        save: bool = False,
+        save: bool = True,
         debug_counts: bool = True,
     ):
         """

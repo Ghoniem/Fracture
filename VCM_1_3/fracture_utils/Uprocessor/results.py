@@ -123,6 +123,14 @@ class DCEResultsNetworkV4:
         path_vids = [int(v) for v in meta.get("path_vertex_ids", [])]
         path_edges = [int(i) for i in meta.get("path_edge_indices", [])]
         segL = np.asarray(meta.get("segment_lengths", []), float)
+        # --- Robust fallback for mixed parametrizations (cspline/arc) ---
+        # segment_lengths may be absent or not aligned with path vertices; recompute from geometry when needed.
+        if segL.size == 0 or segL.size != (len(path_vids) - 1):
+            segL = np.zeros(max(0, len(path_vids) - 1), float)
+            for ii in range(len(path_vids) - 1):
+                v0 = self.calc.network.V(int(path_vids[ii]))
+                v1 = self.calc.network.V(int(path_vids[ii + 1]))
+                segL[ii] = math.hypot(float(v1.x - v0.x), float(v1.y - v0.y))
         Ltot = float(meta.get("total_length", np.sum(segL)))
 
         if edge_index not in path_edges:
@@ -253,6 +261,14 @@ class DCEResultsNetworkV4:
         path_vids = [int(v) for v in meta.get("path_vertex_ids", [])]
         path_edges = [int(i) for i in meta.get("path_edge_indices", [])]
         segL = np.asarray(meta.get("segment_lengths", []), float)
+        # --- Robust fallback for mixed parametrizations (cspline/arc) ---
+        # segment_lengths may be absent or not aligned with path vertices; recompute from geometry when needed.
+        if segL.size == 0 or segL.size != (len(path_vids) - 1):
+            segL = np.zeros(max(0, len(path_vids) - 1), float)
+            for ii in range(len(path_vids) - 1):
+                v0 = self.calc.network.V(int(path_vids[ii]))
+                v1 = self.calc.network.V(int(path_vids[ii + 1]))
+                segL[ii] = math.hypot(float(v1.x - v0.x), float(v1.y - v0.y))
         Ltot = float(meta.get("total_length", np.sum(segL)))
 
         if edge_index not in path_edges:
@@ -544,6 +560,103 @@ class DCEResultsNetworkV4:
             sig = applied_tensor(self.calc.applied)
             sxx += sig[0,0]; syy += sig[1,1]; sxy += sig[0,1]
         return sxx, syy, sxy
+
+    def stress_field_global_excluding_panels(
+        self,
+        pid: int,
+        skip_panels: set[int],
+        Xg,
+        Yg,
+        add_remote: bool = True,
+    ):
+        """Global stress field excluding selected panels from ONE polyline.
+
+        This is the correct exclusion for PK/J diagnostics on a single crack:
+        - keep interactions from the rest of the same crack/polyline
+        - remove only the near-singular self (or near-self) panel contributions
+
+        Parameters
+        ----------
+        pid : int
+            Polyline id in sol["polyline_solutions"] to apply panel exclusion to.
+        skip_panels : set[int]
+            Set of panel indices (0-based) within that polyline to skip.
+        Xg, Yg : array-like
+            Global coordinates to evaluate the stress at.
+        add_remote : bool
+            If True, include applied remote stress.
+
+        Returns
+        -------
+        sxx, syy, sxy : np.ndarray
+        """
+        pid = int(pid)
+        skip = set(int(k) for k in skip_panels) if skip_panels is not None else set()
+
+        Xg = np.asarray(Xg, float)
+        Yg = np.asarray(Yg, float)
+        sxx = np.zeros_like(Xg)
+        syy = np.zeros_like(Xg)
+        sxy = np.zeros_like(Xg)
+
+        E = float(self.calc.material.E)
+        nu = float(self.calc.material.nu)
+        mu = E / (2.0 * (1.0 + nu))
+
+        for p, poly in enumerate(self.sol.get("polyline_solutions", [])):
+            bI = np.asarray(poly["bI"], float)
+            bII = np.asarray(poly["bII"], float)
+            xmid = np.asarray(poly["x_col"], float)
+            tmid = np.asarray(poly["t_col"], float)
+            nmid = np.asarray(poly["n_col"], float)
+            ds = np.asarray(poly["ds"], float)
+
+            for j, (x0, t0, n0, bi, bii, w) in enumerate(zip(xmid, tmid, nmid, bI, bII, ds)):
+                if int(p) == pid and int(j) in skip:
+                    continue
+                dB = (bii * t0 + bi * n0) * float(w)
+                dx = Xg - float(x0[0])
+                dy = Yg - float(x0[1])
+                a, b, c = stress_edge_dislocation(dx, dy, float(dB[0]), float(dB[1]), mu, nu)
+                sxx += a
+                syy += b
+                sxy += c
+
+        if add_remote:
+            sig = applied_tensor(self.calc.applied)
+            sxx += sig[0, 0]
+            syy += sig[1, 1]
+            sxy += sig[0, 1]
+
+        return sxx, syy, sxy
+
+    def displacement_grad_global_fd(
+        self,
+        Xg,
+        Yg,
+        *,
+        h: float = 1e-6,
+        add_remote: bool = False,
+    ):
+        """Finite-difference displacement gradients ∂u/∂x, ∂u/∂y at points.
+
+        Returns
+        -------
+        duxdx, duxdy, duydx, duydy : np.ndarray
+        """
+        Xg = np.asarray(Xg, float)
+        Yg = np.asarray(Yg, float)
+        h = float(h)
+        ux_p, uy_p = self.displacement_field_global(Xg + h, Yg, add_remote=add_remote)
+        ux_m, uy_m = self.displacement_field_global(Xg - h, Yg, add_remote=add_remote)
+        duxdx = (ux_p - ux_m) / (2.0 * h)
+        duydx = (uy_p - uy_m) / (2.0 * h)
+
+        ux_p, uy_p = self.displacement_field_global(Xg, Yg + h, add_remote=add_remote)
+        ux_m, uy_m = self.displacement_field_global(Xg, Yg - h, add_remote=add_remote)
+        duxdy = (ux_p - ux_m) / (2.0 * h)
+        duydy = (uy_p - uy_m) / (2.0 * h)
+        return duxdx, duxdy, duydx, duydy
 
     def displacement_field_global(self, Xg, Yg, add_remote: bool = False):
         Xg = np.asarray(Xg, float)

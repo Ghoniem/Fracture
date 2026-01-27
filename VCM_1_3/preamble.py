@@ -49,14 +49,16 @@ def enable_autoreload():
 # ------------------------------------------------------------
 # Core solver / generator / processor imports
 # ------------------------------------------------------------
-from fracture_utils.Ugenerator.network_gen import CrackNetworkGenerator
+#from fracture_utils.Ugenerator.network_gen import CrackNetworkGenerator
+from fracture_utils.Ugenerator.crack_network_generator_v1 import CrackNetworkGenerator
+
 
 from fracture_utils.Usolver.network import CrackNetworkV4 as CrackNetworkV4
-from fracture_utils.Usolver.parametrization_v5_cod import DCENetworkStaticV4  # type: ignore
-import fracture_utils.Usolver.build_v4 as build
+from fracture_utils.Usolver.parametrization import DCENetworkStaticV4  # type: ignore
+import fracture_utils.Usolver.build as build
 from fracture_utils.Usolver.material import Material, AppliedStress
 
-from fracture_utils.Uprocessor.results_v1_PATHIND_updated import DCEResultsNetworkV4
+from fracture_utils.Uprocessor.results import DCEResultsNetworkV4
 from fracture_utils.Uprocessor import diagnostics as diagnostics
 
 # ------------------------------------------------------------
