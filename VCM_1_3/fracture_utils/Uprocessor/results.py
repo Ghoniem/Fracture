@@ -132,6 +132,28 @@ class DCEResultsNetworkV4:
                 v1 = self.calc.network.V(int(path_vids[ii + 1]))
                 segL[ii] = math.hypot(float(v1.x - v0.x), float(v1.y - v0.y))
         Ltot = float(meta.get("total_length", np.sum(segL)))
+        # --- Guard for arc / cspline single-edge polylines ---
+        if len(path_vids) < 2:
+            edge = self.calc.network.edges[edge_index]
+            path_vids = [int(edge.v0), int(edge.v1)]
+        if len(path_edges) == 0:
+            path_edges = [int(edge_index)]
+        if segL.size == 0 or segL.size != (len(path_vids) - 1):
+            try:
+                ds = np.asarray(solp.get("ds", []), float).reshape(-1,)
+                Lds = float(np.sum(ds)) if ds.size > 0 else 0.0
+            except Exception:
+                Lds = 0.0
+            if Lds > 0.0:
+                segL = np.array([Lds], float)
+                Ltot = float(meta.get("total_length", Lds))
+            else:
+                segL = np.zeros(max(0, len(path_vids) - 1), float)
+                for ii in range(len(path_vids) - 1):
+                    v0 = self.calc.network.V(int(path_vids[ii]))
+                    v1 = self.calc.network.V(int(path_vids[ii + 1]))
+                    segL[ii] = math.hypot(float(v1.x - v0.x), float(v1.y - v0.y))
+                Ltot = float(meta.get("total_length", np.sum(segL)))
 
         if edge_index not in path_edges:
             raise ValueError(f"Edge {edge_index} is not in polyline path for pid={pid}.")
@@ -270,6 +292,32 @@ class DCEResultsNetworkV4:
                 v1 = self.calc.network.V(int(path_vids[ii + 1]))
                 segL[ii] = math.hypot(float(v1.x - v0.x), float(v1.y - v0.y))
         Ltot = float(meta.get("total_length", np.sum(segL)))
+        # --- Guard for arc / cspline single-edge polylines ---
+        # Some parametrizations (e.g. a single arc edge) may not populate path_vertex_ids,
+        # while still providing a valid polyline solution. In that case, fall back to a
+        # single-segment path (this edge only) so reconstruction works.
+        if len(path_vids) < 2:
+            edge = self.calc.network.edges[edge_index]
+            path_vids = [int(edge.v0), int(edge.v1)]
+        if len(path_edges) == 0:
+            path_edges = [int(edge_index)]
+        # If segment lengths are still inconsistent, prefer polyline length from ds when available.
+        if segL.size == 0 or segL.size != (len(path_vids) - 1):
+            try:
+                ds = np.asarray(solp.get("ds", []), float).reshape(-1,)
+                Lds = float(np.sum(ds)) if ds.size > 0 else 0.0
+            except Exception:
+                Lds = 0.0
+            if Lds > 0.0:
+                segL = np.array([Lds], float)
+                Ltot = float(meta.get("total_length", Lds))
+            else:
+                segL = np.zeros(max(0, len(path_vids) - 1), float)
+                for ii in range(len(path_vids) - 1):
+                    v0 = self.calc.network.V(int(path_vids[ii]))
+                    v1 = self.calc.network.V(int(path_vids[ii + 1]))
+                    segL[ii] = math.hypot(float(v1.x - v0.x), float(v1.y - v0.y))
+                Ltot = float(meta.get("total_length", np.sum(segL)))
 
         if edge_index not in path_edges:
             raise ValueError(f"Edge {edge_index} is not in polyline path for pid={pid}.")
