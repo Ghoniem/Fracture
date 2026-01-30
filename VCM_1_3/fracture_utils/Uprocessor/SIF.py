@@ -2,6 +2,12 @@
 from __future__ import annotations
 import numpy as np
 import math
+from fracture_utils.Usolver.network import CrackNetworkV4 as CrackNetworkV4
+from fracture_utils.Usolver.material import Material, AppliedStress
+from fracture_utils.Uprocessor.results import DCEResultsNetworkV4
+from fracture_utils.Usolver.parametrization import DCENetworkStaticV4
+
+
 
 def sif_from_cod_fit(
     x: np.ndarray,
@@ -354,3 +360,221 @@ def rotate_sifs(K_I, K_II, theta):
     K_I_rot  = K_I * np.cos(theta/2)**2 + K_II * np.sin(theta)
     K_II_rot = K_II * np.cos(theta) - 0.5 * K_I * np.sin(theta)
     return float(K_I_rot), float(K_II_rot)
+
+# -------------------------
+# POLYLINE tip-fit helpers  
+# -------------------------
+
+# -------------------------
+# Euclidean tip-fit helper
+# -------------------------
+def sif_from_cod_fit_euclid_tip(xy_mid, COD, CSD, p_tip, *, a_fit, mu,
+                                rmin_frac=1e-6, rmax_frac=0.06, min_pts=10, two_term=True):
+    xy_mid = np.asarray(xy_mid, float)
+    COD = np.asarray(COD, float).reshape(-1)
+    CSD = np.asarray(CSD, float).reshape(-1)
+    p_tip = np.asarray(p_tip, float).reshape(2,)
+
+    r = np.linalg.norm(xy_mid - p_tip[None, :], axis=1)
+    rmin = max(float(rmin_frac) * float(a_fit), 0.0)
+    rmax = float(rmax_frac) * float(a_fit)
+
+    m = (r >= rmin) & (r <= rmax) & np.isfinite(r) & np.isfinite(COD) & np.isfinite(CSD)
+    rr = r[m]
+    if rr.size < min_pts:
+        raise ValueError(
+            f"Euclid tip-fit window too small: rr.size={rr.size}. "
+            f"Try increasing rmax_frac (currently {rmax_frac}) or lowering min_pts."
+        )
+
+    order = np.argsort(rr)
+    rr = rr[order]
+    CODw = COD[m][order]
+    CSDw = CSD[m][order]
+
+    sr = np.sqrt(rr)
+    if two_term:
+        X = np.vstack([sr, rr*sr]).T
+    else:
+        X = sr[:, None]
+
+    Ac, *_ = np.linalg.lstsq(X, CODw, rcond=None)
+    As, *_ = np.linalg.lstsq(X, CSDw, rcond=None)
+
+    A_COD = float(Ac[0])
+    A_CSD = float(As[0])
+
+    # Canonical leading-term mapping (same as before)
+    pref = 4.0 / mu * np.sqrt(1.0 / (2.0*np.pi))
+    KI = A_COD / pref
+    KII = A_CSD / pref
+
+    meta = dict(rr=rr, rmin=rmin, rmax=rmax, A_COD=A_COD, A_CSD=A_CSD)
+    return float(KI), float(KII), meta
+
+# -------------------------
+# Solver wrapper (TIP segment!)
+# -------------------------
+def solve_K_polyline(
+    net, V, ne_half, edge_index_use, a_fit_global, *,
+    E, nu, plane, sig_xx, sig_yy, sig_xy, base_knobs,
+    fit_frac=0.20,
+    min_segs=2,
+    rmax_frac=0.30,
+    rmin_frac=1e-6,
+    min_pts=8,
+    two_term=True,
+    theta_rot_override=None,
+):
+    """
+    Polyline arc (or general polyline) SIF extraction using existing fit utilities.
+    Implements a multi-segment near-tip window for the Euclidean tip-fit, without
+    introducing new fit functions.
+
+    Parameters match the notebook validation cell call.
+    """
+
+    # ---- Material ----
+    plane_l = str(plane).lower().strip()
+    plane_stress = (plane_l in ("stress", "plane_stress", "planestress"))
+    material = Material(E=float(E), nu=float(nu), plane_stress=bool(plane_stress))
+
+    # ---- Applied stress ----
+    def _make_applied(sx, sy, txy):
+        try:
+            # Prefer keyword construction if supported
+            for kwset in (
+                dict(sxx=sx, syy=sy, sxy=txy),
+                dict(sig_xx=sx, sig_yy=sy, sig_xy=txy),
+                dict(sx=sx, sy=sy, txy=txy),
+                dict(sigma_xx=sx, sigma_yy=sy, sigma_xy=txy),
+            ):
+                try:
+                    return AppliedStress(**kwset)
+                except TypeError:
+                    pass
+            return AppliedStress(sx, sy, txy)
+        except Exception:
+            return AppliedStress(sx, sy, txy)
+
+    applied = _make_applied(float(sig_xx), float(sig_yy), float(sig_xy))
+
+    # ---- Solver ----
+    # Your DCENetworkStaticV4 constructor: (material, network, applied)
+    calc = DCENetworkStaticV4(material, net, applied)
+
+    # base_knobs belong to solve(), not __init__()
+    sol = calc.solve(ne_half=int(ne_half), **dict(base_knobs))
+    res = DCEResultsNetworkV4(calc, sol)
+
+    edge_index_use = int(edge_index_use)
+
+    # Tip reconstruction for tip frame and p_tip
+    x_tip, COD_tip, CSD_tip, extra_tip = res.reconstruct_cod_csd_panel_midpoints(
+        edge_index=edge_index_use,
+        enforce_global_tip_zero=True,
+    )
+    extra_tip = dict(extra_tip) if isinstance(extra_tip, dict) else {}
+
+    V_arr = np.asarray(V, float)
+    if V_arr.ndim != 2 or V_arr.shape[1] < 3:
+        raise ValueError("V must be array (n,>=3) with columns [id,x,y,...]")
+    p_tip = np.asarray(V_arr[-1, 1:3], float)
+
+    # Tip tangent ex_tip: from extra if present, else from last segment geometry
+    P = np.asarray(V_arr[:, 1:3], float)
+    ex_tip = extra_tip.get("ex", None)
+    if ex_tip is None:
+        ex_tip = P[-1] - P[-2]
+    ex_tip = np.asarray(ex_tip, float).reshape(2,)
+    ex_tip /= max(np.linalg.norm(ex_tip), 1e-30)
+    ey_tip = np.array([-ex_tip[1], ex_tip[0]], float)
+    theta_tip = float(np.arctan2(ex_tip[1], ex_tip[0]))
+
+    mu = float(E) / (2.0 * (1.0 + float(nu)))
+
+    # ---- Multi-segment window selection by arclength ----
+    seglen = np.linalg.norm(P[1:] - P[:-1], axis=1)
+    L = float(np.sum(seglen))
+    if not np.isfinite(L) or L <= 0.0:
+        raise ValueError("Invalid polyline total length")
+
+    if edge_index_use < 0 or edge_index_use >= len(seglen):
+        raise IndexError(f"edge_index_use={edge_index_use} out of range for {len(seglen)} polyline segments")
+
+    target = float(fit_frac) * L
+    acc = 0.0
+    j0 = edge_index_use
+    while j0 > 0 and (acc < target or (edge_index_use - j0 + 1) < int(min_segs)):
+        acc += float(seglen[j0])
+        j0 -= 1
+
+    xs_all, COD_all, CSD_all = [], [], []
+
+    for j in range(j0, edge_index_use + 1):
+        xj, CODj, CSDj, extraj = res.reconstruct_cod_csd_panel_midpoints(
+            edge_index=int(j),
+            enforce_global_tip_zero=(int(j) == edge_index_use),
+        )
+        extraj = dict(extraj) if isinstance(extraj, dict) else {}
+
+        CODj = np.asarray(CODj, float).reshape(-1)
+        CSDj = np.asarray(CSDj, float).reshape(-1)
+
+        # Segment tangent ex_j: from extra or geometry
+        ex_j = extraj.get("ex", None)
+        if ex_j is None:
+            ex_j = P[j+1] - P[j]
+        ex_j = np.asarray(ex_j, float).reshape(2,)
+        ex_j /= max(np.linalg.norm(ex_j), 1e-30)
+        ey_j = np.array([-ex_j[1], ex_j[0]], float)
+
+        # Midpoint coordinates: xy_mid if provided, else geometric midpoint repeated
+        xy_mid = extraj.get("xy_mid", None)
+        if xy_mid is None:
+            pm = 0.5 * (P[j] + P[j+1])
+            xy_mid = np.repeat(pm[None, :], CODj.size, axis=0)
+        else:
+            xy_mid = np.asarray(xy_mid, float)
+
+        # edge-local -> global jump vector
+        jump_global = CODj[:, None] * ey_j[None, :] + CSDj[:, None] * ex_j[None, :]
+
+        # global -> tip frame
+        COD_tipframe = jump_global @ ey_tip
+        CSD_tipframe = jump_global @ ex_tip
+
+        xs_all.append(xy_mid)
+        COD_all.append(COD_tipframe)
+        CSD_all.append(CSD_tipframe)
+
+    xy_mid_all = np.vstack(xs_all)
+    COD_fit = np.concatenate(COD_all)
+    CSD_fit = np.concatenate(CSD_all)
+
+    # ---- Existing Euclidean tip fit ----
+    KI, KII, meta_fit = sif_from_cod_fit_euclid_tip(
+        xy_mid=xy_mid_all,
+        COD=COD_fit,
+        CSD=CSD_fit,
+        p_tip=p_tip,
+        a_fit=float(a_fit_global),
+        mu=float(mu),
+        rmin_frac=float(rmin_frac),
+        rmax_frac=float(rmax_frac),
+        min_pts=int(min_pts),
+        two_term=bool(two_term),
+    )
+
+    theta_rot = float(theta_rot_override) if (theta_rot_override is not None) else (-2.0 * theta_tip)
+    KI_CR, KII_CR = rotate_sifs(KI, KII, theta_rot)
+
+    meta = dict(
+        theta_tip=theta_tip,
+        theta_rot=theta_rot,
+        p_tip=p_tip,
+        fit_frac=float(fit_frac),
+        seg_window=(int(j0), int(edge_index_use)),
+        meta_fit=meta_fit,
+    )
+    return KI, KII, KI_CR, KII_CR, meta

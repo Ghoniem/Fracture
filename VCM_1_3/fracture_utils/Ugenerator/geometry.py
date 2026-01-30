@@ -10,6 +10,7 @@ This module contains geometric algorithms for:
 
 import numpy as np
 from typing import Tuple, Optional
+from fracture_utils.Usolver.network import CrackNetworkV4 as CrackNetworkV4
 
 
 class GeometryUtils:
@@ -204,3 +205,33 @@ class GeometryUtils:
                 min_angle = min(min_angle, min_separation)
         
         return min_angle
+
+# -------------------------
+# POLYLINE arc geometry (nseg segments)
+# returns (net, V) so we can grab p_tip robustly
+# -------------------------
+def polyline_arc_network(alpha_half, a_chord, nseg=12):
+    R = a_chord / np.sin(alpha_half)
+    yc = R * np.cos(alpha_half)
+
+    thL = np.pi/2 + alpha_half
+    thR = np.pi/2 - alpha_half
+    th  = np.linspace(thL, thR, nseg + 1)
+
+    x = R * np.cos(th)
+    y = -yc + R * np.sin(th)
+
+    V = np.zeros((nseg + 1, 3), float)
+    V[:,0] = np.arange(nseg + 1)   # ids
+    V[:,1] = x
+    V[:,2] = y
+
+    Econn = np.array([[i, i+1] for i in range(nseg)], int)
+
+    net = CrackNetworkV4.from_vertices_connectivity(
+        vertices=V,
+        connectivity=Econn,
+        Nv_max=nseg + 1,
+        validate=True,
+    )
+    return net, V

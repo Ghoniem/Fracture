@@ -16,7 +16,7 @@ Date: 2025
 """
 
 from .generator import CrackNetworkGenerator
-from .geometry import GeometryUtils
+from .geometry import GeometryUtils, polyline_arc_network
 from .analysis import NetworkAnalyzer
 from .visualization import NetworkVisualizer
 from .boundary import (
@@ -37,6 +37,7 @@ __version__ = "1.1.0"
 __all__ = [
     'CrackNetworkGenerator',
     'GeometryUtils',
+    'polyline_arc_network',
     'NetworkAnalyzer',
     'NetworkVisualizer',
     'Boundary',

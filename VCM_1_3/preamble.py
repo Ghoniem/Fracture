@@ -133,7 +133,8 @@ from fracture_utils.Ugenerator import (
     CADImporter,
     CADExporter,
     BezierCurve,
-    SplineCurve
+    SplineCurve,
+    polyline_arc_network,
 )
 
 # ------------------------------------------------------------
@@ -146,7 +147,8 @@ from fracture_utils.Usolver.material import Material, AppliedStress
 
 from fracture_utils.Uprocessor.results import DCEResultsNetworkV4
 from fracture_utils.Uprocessor import diagnostics as diagnostics
-from fracture_utils.Uprocessor.SIF import sif_from_cod_fit, cotterell_rice_K, rotate_sifs, pk_sif_from_window
+from fracture_utils.Uprocessor.SIF import sif_from_cod_fit, cotterell_rice_K, rotate_sifs
+from fracture_utils.Uprocessor.SIF import pk_sif_from_window,sif_from_cod_fit_euclid_tip, solve_K_polyline
 from fracture_utils.Uprocessor.PK import PKProcessor
 
 # ------------------------------------------------------------
@@ -196,6 +198,7 @@ __all__ = [
     "CADExporter",
     "BezierCurve",
     "SplineCurve",
+    "polyline_arc_network",
     
     # Solver / results
     "CrackNetworkV4",
@@ -231,4 +234,6 @@ __all__ = [
     "cotterell_rice_K",
     "rotate_sifs",
     "pk_sif_from_window",
+    "sif_from_cod_fit_euclid_tip",
+    "solve_K_polyline",
 ]
