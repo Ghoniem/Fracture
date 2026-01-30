@@ -322,6 +322,21 @@ class DCEResultsNetworkV4:
         if edge_index not in path_edges:
             raise ValueError(f"Edge {edge_index} is not in polyline path for pid={pid}.")
 
+        # --- Robust guard: ensure path_vids/segL are non-empty (arc edges may not populate path graph) ---
+        if path_vids is None or len(path_vids) < 2:
+            edge_fallback = self.calc.network.edges[int(edge_index)]
+            path_vids = [int(edge_fallback.v0), int(edge_fallback.v1)]
+        if segL is None or len(segL) == 0:
+            # Prefer polyline length from ds when available
+            ds_fb = np.asarray(solp.get('ds', []), float).reshape(-1,)
+            if ds_fb.size > 0:
+                segL = np.array([float(np.sum(ds_fb))], float)
+            else:
+                # chord length fallback
+                v0_fb = self.calc.network.V(path_vids[0])
+                v1_fb = self.calc.network.V(path_vids[1])
+                segL = np.array([float(np.hypot(v1_fb.x - v0_fb.x, v1_fb.y - v0_fb.y))], float)
+        
         s_vert = np.zeros(len(path_vids), float)
         if len(segL) == len(path_vids) - 1:
             s_vert[1:] = np.cumsum(segL)
@@ -415,13 +430,49 @@ class DCEResultsNetworkV4:
         v1_obj = self.calc.network.V(edge.v1)
         p0 = np.array([float(v0_obj.x), float(v0_obj.y)], dtype=float)
         p1 = np.array([float(v1_obj.x), float(v1_obj.y)], dtype=float)
-        t = p1 - p0
-        L = float(np.linalg.norm(t))
-        if L <= 0:
-            ex = np.array([1.0, 0.0])
-        else:
-            ex = t / L
-        ey = np.array([-ex[1], ex[0]])
+
+        # ------------------------------------------------------------
+        # Local frame (ex, ey) used to project jump vectors J -> (CSD, COD).
+        #
+        # For straight segments, use the chord direction. For ARC edges,
+        # use the *tip tangent* at the evaluated tip (the segment end in the
+        # polyline direction), because Cotterell–Rice and the COD-fit SIF
+        # extraction interpret (K_I, K_II) in the crack-tip local frame.
+        #
+        # ARC encoding in this repo:
+        #   edge_kinds=["arc"], edge_ctrl_vids=[(ctrl_vid,)] where ctrl_vid is the CIRCLE CENTER.
+        # ------------------------------------------------------------
+        # ------------------------------------------------------------
+        # Local frame (ex, ey) for projecting jump vectors J -> (CSD, COD)
+        #
+        # IMPORTANT: For parametrized_crack+polyline, the most reliable tangents are the
+        # per-panel tangents provided by the solver (t_mid / t_col). Using network chord
+        # directions (or missing arc metadata) can freeze ex=[1,0] and make KI appear flat vs alpha.
+        #
+        # We therefore define ex from the *tip-neighborhood* tangent of this edge's panel midpoints.
+        # ------------------------------------------------------------
+        ex = None
+        try:
+            # t_use has shape (Np,2) and m selects panels on this edge
+            t_edge = np.asarray(t_use[m], float) if 't_use' in locals() and t_use is not None else None
+            if t_edge is not None and t_edge.size >= 2:
+                ex = np.asarray(t_edge[-1], float).reshape(2,)
+                # ensure unit length
+                nrm = float(np.hypot(ex[0], ex[1]))
+                if nrm > 0:
+                    ex = ex / nrm
+        except Exception:
+            ex = None
+
+        if ex is None:
+            t = p1 - p0
+            L = float(np.linalg.norm(t))
+            if L <= 0:
+                ex = np.array([1.0, 0.0], dtype=float)
+            else:
+                ex = t / L
+
+        ey = np.array([-ex[1], ex[0]], dtype=float)
 
         CSD_mid = J_mid_e @ ex
         COD_mid = J_mid_e @ ey

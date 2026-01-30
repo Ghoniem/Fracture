@@ -76,7 +76,7 @@ def sif_from_cod_fit(
     CODw = COD[m]
     CSDw = CSD[m]
 
-    if rr.size < 8:
+    if rr.size < 4:
         raise ValueError(
             f"Fit window too small after expansion: rr.size={rr.size}. "
             f"Try increasing rho_max (currently {rho_max}) or increasing n_pts."
@@ -167,142 +167,190 @@ def estimate_KI_KII_from_jumps_near_tip(
     )
     return KI_jump, KII_jump
 
-
-def sih_circular_sector_sif_biaxial(alpha, sigma, rho=1.0, tip=+1):
+def pk_sif_from_window(
+    pk,
+    *,
+    edge_index: int = 0,
+    at: str = "end",
+    window_panels: int = 12,
+    window_frac: float = 0.5,
+    exclude_self: bool = True,
+    plane_strain: bool = True,
+    theta_rot: float = 0.0,
+):
     """
-    Sih–Paris (1962): Curved crack (circular-sector crack) in an infinite sheet
-    under uniform *equal biaxial tension* (sigma in x and y).
+    Compute (KI, KII) from the Peach–Koehler (PK) window force.
 
-    Geometry:
-      - crack is a circular arc of radius rho about the origin
-      - the arc subtends total angle 2*alpha (alpha in radians), so endpoints at ±alpha
-      - chord length: c = 2*rho*sin(alpha)
-
-    Returns:
-      KI, KII, c
-
-    Notes:
-      - This is Eq. (13) from Sih et al., "Crack-Tip, Stress-Intensity Factors..."
-        in the section "Curved Crack in Sheet Under Biaxial Tension".
-      - The published derivation is for unit radius; scaling with sqrt(rho) is applied.
-      - tip sets the sign convention for KII:
-          tip = +1  -> one end (e.g., +alpha)
-          tip = -1  -> the opposite end (e.g., -alpha)
-        KI is the same magnitude at both ends for this symmetric biaxial case.
-    """
-    alpha = float(alpha)
-    if not (0.0 < alpha < np.pi):
-        raise ValueError("alpha must be in (0, pi) radians.")
-
-    # Eq (13) denominator
-    denom = 1.0 + (np.sin(alpha/2.0))**2
-
-    # Eq (13) square-root factors
-    s1 = np.sin(alpha) * (1.0 + np.cos(alpha)) / 2.0
-    s2 = np.sin(alpha) * (1.0 - np.cos(alpha)) / 2.0
-
-    # Numerical safety (should be >=0 for alpha in (0, pi), but guard rounding)
-    s1 = max(s1, 0.0)
-    s2 = max(s2, 0.0)
-
-    # Unit-radius SIFs from Eq (13)
-    k1_unit = (sigma / denom) * np.sqrt(s1)
-    k2_unit = (sigma / denom) * np.sqrt(s2)
-
-    # Scale from unit radius to radius rho: K ~ sqrt(length) => multiply by sqrt(rho)
-    KI  = k1_unit
-    KII = k2_unit
-
-    # chord length (useful for normalization used in later papers/figures)
-    c = rho * np.sin(2*alpha)
-
-    return KI, KII, c
-
-
-def sih_normalized_F(alpha, sigma, rho=1.0, tip=+1):
-    """
-    Convenience: returns normalized factors
-      FI  = KI  / [sigma * sqrt(pi * (c/2))]
-      FII = KII / [sigma * sqrt(pi * (c/2))]
-    using chord length c = rho*sin(2*alpha).
-    """
-    KI, KII, c = sih_circular_sector_sif_biaxial(alpha, sigma, rho=rho, tip=tip)
-    Fden = sigma * np.sqrt(np.pi * (c/2.0))
-    return (KI / Fden), (KII / Fden), c
-
-
-def cotterell_rice_K_circular_arc(alpha, a, sigma_xx, sigma_yy, sigma_xy):
-    """
-    Cotterell & Rice (1980), Section 3: exact KI, KII for a circular arc crack
-    under a uniform far-field stress state (sigma_xx, sigma_yy, sigma_xy).
-
-    Implements Eqs. (20) and (21) in:
-      B. Cotterell and J.R. Rice, "Slightly curved or kinked cracks",
-      Int. J. Fracture 16 (1980) 155–169.  (See Section 3, Eqs. 20–21.)
+    IMPORTANT (frame consistency)
+    -----------------------------
+    The PK output is a *vector* force F in the global frame. To compare against a
+    target convention/frame (e.g. Cotterell–Rice "global" frame), you must rotate
+    the *force* (and the local basis vectors) BEFORE converting (J1,J2)->(KI,KII).
+    Rotating (KI,KII) afterwards is not equivalent in mixed mode.
 
     Parameters
     ----------
-    alpha : float
-        Total included angle of the circular arc (radians).
-        (The equations use sin(alpha/2), cos(alpha/2).)
-    a : float
-        Radius parameter appearing in (pi*a)^(1/2) prefactor in Eqs. (20)-(21).
-        Units: length.
-    sigma_xx, sigma_yy, sigma_xy : float
-        Remote uniform stress components (same units as desired for K / sqrt(length)).
+    pk : PKProcessor
+        Instance constructed from a DCEResultsNetworkV4 object.
+    edge_index : int
+        Crack edge index (as used by results reconstructor).
+    at : {'end','start'}
+        Which tip to use.
+    window_panels : int
+        Number of panels to include in the PK force window (preferred).
+    window_frac : float
+        Fractional window length fallback (used if window_panels not supported).
+    exclude_self : bool
+        Whether to exclude self-stress in the stress evaluation.
+    plane_strain : bool
+        If True, use E' = E/(1-nu^2). If False, use E' = E (plane stress).
+    theta_rot : float
+        Optional *global* rotation angle (radians) applied to BOTH the PK force
+        vector and the local basis (ex,ey) prior to projection. Use this to map
+        your computational/global frame into the comparison frame.
 
     Returns
     -------
     KI, KII : floats
-        Mode I and Mode II stress intensity factors.
-
-    Notes
-    -----
-    - Uses the Cotterell–Rice corrected exact solution for the circular arc crack.
-    - Angle convention is that used in their Fig. 2 / Eqs. (20)-(21).
+    meta : dict
+        Diagnostics: raw/rotated forces, bases, J1,J2, Eprime.
     """
-    alpha = float(alpha)
-    a = float(a)
-    if a <= 0.0:
-        raise ValueError("a must be > 0.")
-    if not (0.0 < alpha < 2.0*np.pi):
-        raise ValueError("alpha should be in (0, 2*pi) radians for a proper arc.")
+    # -------------------------------
+    # 1) PK force in global frame
+    # -------------------------------
+    try:
+        F = pk.F_PK_window(
+            edge_index=int(edge_index),
+            at=at,
+            exclude_self=exclude_self,
+            window_panels=window_panels,
+            window_frac=window_frac,
+        )
+    except TypeError:
+        # backward compatibility
+        F = pk.F_PK_window(
+            edge_index=int(edge_index),
+            at=at,
+            exclude_self=exclude_self,
+            window_panels=window_panels,
+        )
 
-    sh = np.sin(alpha/2.0)
-    ch = np.cos(alpha/2.0)
+    if F is None:
+        return float("nan"), float("nan"), {"reason": "F_PK_window returned None"}
 
-    denom = 1.0 + sh**2
+    F = np.asarray(F, float).reshape(2,)
 
-    # Common bracket term in Eqs. (20)-(21):
-    # [(σyy+σxx)/2 - ((σyy-σxx)/2) sin^2(alpha/2) cos^2(alpha/2)]
-    common = 0.5*(sigma_yy + sigma_xx) - 0.5*(sigma_yy - sigma_xx)*(sh**2)*(ch**2)
+    # -------------------------------
+    # 2) Local basis from reconstructor
+    # -------------------------------
+    _, _, _, extra = pk.res.reconstruct_cod_csd_panel_midpoints(
+        edge_index=int(edge_index),
+        enforce_global_tip_zero=False,
+    )
+    extra = dict(extra) if isinstance(extra, dict) else {}
 
-    pref = np.sqrt(np.pi * a)
+    ex = np.asarray(extra.get("ex", [1.0, 0.0]), float).reshape(2,)
+    ey = np.asarray(extra.get("ey", [0.0, 1.0]), float).reshape(2,)
 
-    # Eq. (20)
-    KI = pref * (
-        common * (ch/denom)
-        + 0.5*(sigma_yy - sigma_xx)*np.cos(3.0*alpha/2.0)
-        - sigma_xy*(np.sin(3.0*alpha/2.0) + sh**3)
+    # -------------------------------
+    # 3) Optional rotation (vector rotation) BEFORE J->K
+    # -------------------------------
+    def _rot(v, th):
+        c = float(np.cos(th)); s = float(np.sin(th))
+        return np.array([c*v[0] - s*v[1], s*v[0] + c*v[1]], float)
+
+    theta_rot = float(theta_rot)
+    F_use  = _rot(F,  theta_rot) if abs(theta_rot) > 0 else F.copy()
+    ex_use = _rot(ex, theta_rot) if abs(theta_rot) > 0 else ex.copy()
+    ey_use = _rot(ey, theta_rot) if abs(theta_rot) > 0 else ey.copy()
+
+    # normalize basis defensively
+    nex = float(np.linalg.norm(ex_use))
+    ney = float(np.linalg.norm(ey_use))
+    if nex > 0:
+        ex_use /= nex
+    if ney > 0:
+        ey_use /= ney
+
+    # -------------------------------
+    # 4) Project PK force into local crack frame: J1 (tangent), J2 (normal)
+    # -------------------------------
+    J1 = float(np.dot(F_use, ex_use))
+    J2 = float(np.dot(F_use, ey_use))
+
+    # -------------------------------
+    # 5) Convert (J1,J2)->(KI,KII)
+    # -------------------------------
+    E = float(pk.res.calc.material.E)
+    nu = float(pk.res.calc.material.nu)
+    Eprime = E / (1.0 - nu**2) if bool(plane_strain) else E
+
+    # Relations (plane strain/stress via Eprime):
+    #   J1 = (KI^2 + KII^2)/Eprime
+    #   J2 = -(2*KI*KII)/Eprime
+    A = Eprime * J1
+    C = -0.5 * Eprime * J2
+
+    disc = float(max(A*A - 4.0*C*C, 0.0))
+    D = float(np.sqrt(disc))
+
+    KI2  = float(max(0.5 * (A + D), 0.0))
+    KII2 = float(max(0.5 * (A - D), 0.0))
+
+    KI  = float(np.sqrt(KI2))
+    KII = float(np.sign(C) * np.sqrt(KII2))  # enforce KI*KII sign via C
+
+    meta = dict(
+        F_raw=np.asarray(F, float),
+        F=np.asarray(F_use, float),
+        ex_raw=np.asarray(ex, float),
+        ey_raw=np.asarray(ey, float),
+        ex=np.asarray(ex_use, float),
+        ey=np.asarray(ey_use, float),
+        J1=J1,
+        J2=J2,
+        Eprime=Eprime,
+        plane_strain=bool(plane_strain),
+        theta_rot=theta_rot,
+        window_panels=int(window_panels),
+        window_frac=float(window_frac),
+        exclude_self=bool(exclude_self),
+        edge_index=int(edge_index),
+        at=str(at),
+    )
+    return KI, KII, meta
+
+# -------------------------
+# Cotterell–Rice analytical SIFs (paper form with alpha/2)
+# IMPORTANT: for arc crack use a_arc = R*alpha (half arc length)
+# ------------------------
+
+def cotterell_rice_K(alpha_total, a_arc, sxx, syy, sxy):
+    A0 = 0.5 * (syy + sxx)
+    D0 = 0.5 * (syy - sxx)
+
+    s = np.sin(alpha_total/2)
+    c = np.cos(alpha_total/2)
+
+    bracket = A0 - D0 * (s**2) * (c**2)
+
+    KI  = np.sqrt(np.pi * a_arc) * (
+        bracket * (c / (1.0 + s**2))
+        + D0 * np.cos(3.0 * alpha_total/2)
+        - sxy * (np.sin(3.0 * alpha_total/2) + s**3)
     )
 
-    # Eq. (21)
-    KII = pref * (
-        common * (sh/denom)
-        + 0.5*(sigma_yy - sigma_xx)*np.sin(3.0*alpha/2.0)
-        + sigma_xy*(np.cos(3.0*alpha/2.0) + ch*(sh**2))
+    KII = np.sqrt(np.pi * a_arc) * (
+        bracket * (s / (1.0 + s**2))
+        + D0 * np.sin(3.0 * alpha_total/2)
+        + sxy * (np.cos(3.0 * alpha_total/2) + c * s**2)
     )
+    return float(KI), float(KII)
 
-    return KI, KII
-
-def cotterell_rice_F_circular_arc(alpha, a, sigma_xx, sigma_yy, sigma_xy):
-    KI, KII = cotterell_rice_K_circular_arc(alpha, a, sigma_xx, sigma_yy, sigma_xy)
-    c = 2.0*a*np.sin(alpha/2.0)
-    Fden = 1.0 * np.sqrt(np.pi*(c/2.0))  # = sqrt(pi*c/2)
-    # If you want FI = KI / (sigma*sqrt(pi*c/2)), you must choose what "sigma" is
-    # for mixed loading; here we return the raw scaling with sqrt(pi*c/2).
-    return KI/Fden, KII/Fden, c
-
-
-
-
+# -------------------------
+# SIF rotation formulas
+# -------------------------
+def rotate_sifs(K_I, K_II, theta):
+    K_I_rot  = K_I * np.cos(theta/2)**2 + K_II * np.sin(theta)
+    K_II_rot = K_II * np.cos(theta) - 0.5 * K_I * np.sin(theta)
+    return float(K_I_rot), float(K_II_rot)
