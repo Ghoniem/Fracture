@@ -2,11 +2,11 @@
 from __future__ import annotations
 import numpy as np
 import math
+from fracture_utils.Usolver import material
 from fracture_utils.Usolver.network import CrackNetworkV4 as CrackNetworkV4
 from fracture_utils.Usolver.material import Material, AppliedStress
 from fracture_utils.Uprocessor.results import DCEResultsNetworkV4
 from fracture_utils.Usolver.parametrization import DCENetworkStaticV4
-
 
 
 def sif_from_cod_fit(
@@ -105,9 +105,15 @@ def sif_from_cod_fit(
         AII = float(np.dot(phi, CSDw) / np.dot(phi, phi))
         BI = 0.0
         BII = 0.0
-
-    KI = (float(mu) / (float(kappa) + 1.0)) * float(AI)
-    KII = (float(mu) / (float(kappa) + 1.0)) * float(AII)
+    material = Material(E=200e9, nu=0.3, plane_stress=False)
+    kappa = material.kappa
+    mu = material.mu
+    pref = (kappa + 1.0) / (2.0 * mu) * np.sqrt(2.0 / np.pi)
+    KI = AI / pref
+    KII = AII / pref
+    
+    # KI = (float(mu) / (float(kappa) + 1.0)) * float(AI)
+    # KII = (float(mu) / (float(kappa) + 1.0)) * float(AII)
 
     meta = dict(
         window=wmode,
@@ -357,14 +363,9 @@ def cotterell_rice_K(alpha_total, a_arc, sxx, syy, sxy):
 # SIF rotation formulas
 # -------------------------
 def rotate_sifs(K_I, K_II, theta):
-    K_I_rot  = K_I * np.cos(theta/2)**2 + K_II * np.sin(theta)
-    K_II_rot = K_II * np.cos(theta) - 0.5 * K_I * np.sin(theta)
+    K_I_rot  = K_I * np.cos(theta/2)**2 - K_II * np.sin(theta)
+    K_II_rot = K_II * np.cos(theta) + 0.5 * K_I * np.sin(theta)
     return float(K_I_rot), float(K_II_rot)
-
-# -------------------------
-# POLYLINE tip-fit helpers  
-# -------------------------
-
 # -------------------------
 # Euclidean tip-fit helper
 # -------------------------
@@ -404,8 +405,11 @@ def sif_from_cod_fit_euclid_tip(xy_mid, COD, CSD, p_tip, *, a_fit, mu,
     A_COD = float(Ac[0])
     A_CSD = float(As[0])
 
-    # Canonical leading-term mapping (same as before)
-    pref = 4.0 / mu * np.sqrt(1.0 / (2.0*np.pi))
+    # CORRECT Leading-term mapping (includes kappa)
+    # Near-tip asymptotic: COD ~ (kappa+1)/(4*mu) * sqrt(2*r/pi) * K
+    kappa = material.kappa
+    mu = material.mu
+    pref = (kappa + 1.0) / (2.0 * mu) * np.sqrt(2.0 / np.pi)
     KI = A_COD / pref
     KII = A_CSD / pref
 
@@ -578,3 +582,135 @@ def solve_K_polyline(
         meta_fit=meta_fit,
     )
     return KI, KII, KI_CR, KII_CR, meta
+
+
+# ----------------------------
+# Robust Euclidean tip-fit
+# ----------------------------
+def euclid_tip_fit_from_edge(
+    res,
+    *,
+    edge_index: int,
+    tip_xy,
+    a_fit: float,
+    rmin_frac: float = 1e-6,
+    rmax_frac: float = 0.08,
+    min_pts: int = 10,
+    two_term: bool = False,
+    expand=(1.0, 1.5, 2.0, 3.0),
+    theta: float = 0.0,
+    material=None,
+    prefactor: str = "code",  # "code" uses (kappa+1)/(2mu)*sqrt(2/pi); "canonical" uses 4/mu*sqrt(1/(2pi))
+):
+    """
+    Robust near-tip SIF extraction for *any* edge in a network using Euclidean distance r=||x-x_tip||.
+
+    Parameters
+    ----------
+    res : DCEResultsNetworkV4
+    edge_index : int
+    tip_xy : array-like (2,)
+        Tip point in global coordinates.
+    a_fit : float
+        Characteristic length for scaling rmin/rmax (e.g. branch length l).
+    theta : float
+        Optional rotation angle applied to (KI,KII) using rotate_sifs(). Use 0.0 unless you are sure.
+    material : Material or None
+        If None, uses res.calc.material. If provided, uses that.
+    prefactor : {"code","canonical"}
+        - "code": pref = (kappa+1)/(2mu)*sqrt(2/pi)
+        - "canonical": pref = 4/mu*sqrt(1/(2pi))
+    """
+    # ----- material constants -----
+    mat = material if material is not None else getattr(res.calc, "material", None)
+    if mat is None:
+        raise ValueError("euclid_tip_fit_from_edge: could not obtain material. Pass material=... or ensure res.calc.material exists.")
+
+    mu = float(getattr(mat, "mu", None) or (mat.E / (2.0 * (1.0 + mat.nu))))
+    # kappa depends on plane stress/strain convention of your Material class
+    kappa = float(getattr(mat, "kappa", None))
+    if not np.isfinite(kappa):
+        # fallback
+        nu = float(mat.nu)
+        plane_stress = bool(getattr(mat, "plane_stress", False))
+        kappa = (3.0 - nu) / (1.0 + nu) if plane_stress else (3.0 - 4.0 * nu)
+
+    # ----- reconstruct -----
+    x, COD, CSD, extra = res.reconstruct_cod_csd_panel_midpoints(
+        edge_index=int(edge_index),
+        enforce_global_tip_zero=True,
+    )
+    extra = dict(extra) if isinstance(extra, dict) else {}
+
+    xy_mid = extra.get("xy_mid", None)
+    if xy_mid is None:
+        raise KeyError("extra['xy_mid'] missing from reconstruct_cod_csd_panel_midpoints; needed for Euclidean windowing.")
+
+    xy_mid = np.asarray(xy_mid, float)
+    COD = np.asarray(COD, float).reshape(-1)
+    CSD = np.asarray(CSD, float).reshape(-1)
+    tip_xy = np.asarray(tip_xy, float).reshape(2,)
+
+    r = np.linalg.norm(xy_mid - tip_xy[None, :], axis=1)
+
+    a_fit = float(a_fit)
+    rmin = max(float(rmin_frac) * a_fit, 0.0)
+
+    mask = None
+    rr = None
+    rmax_used = None
+    for fac in expand:
+        rmax_used = float(rmax_frac) * float(fac) * a_fit
+        mask = (r >= rmin) & (r <= rmax_used) & np.isfinite(r) & np.isfinite(COD) & np.isfinite(CSD)
+        rr = r[mask]
+        if rr.size >= int(min_pts):
+            break
+
+    if rr is None or rr.size < int(min_pts):
+        raise ValueError(
+            f"Euclid tip-fit window too small: rr.size={0 if rr is None else rr.size}. "
+            f"Try increasing rmax_frac (currently {rmax_frac}) or lowering min_pts."
+        )
+
+    order = np.argsort(rr)
+    rr = rr[order]
+    CODw = COD[mask][order]
+    CSDw = CSD[mask][order]
+
+    sr = np.sqrt(rr)
+    if two_term:
+        X = np.vstack([sr, rr * sr]).T
+    else:
+        X = sr[:, None]
+
+    Ac, *_ = np.linalg.lstsq(X, CODw, rcond=None)
+    As, *_ = np.linalg.lstsq(X, CSDw, rcond=None)
+
+    A_COD = float(Ac[0])
+    A_CSD = float(As[0])
+
+    prefactor = str(prefactor).lower().strip()
+    if prefactor == "code":
+        pref = (kappa + 1.0) / (2.0 * mu) * np.sqrt(2.0 / np.pi)
+    elif prefactor == "canonical":
+        pref = 4.0 / mu * np.sqrt(1.0 / (2.0 * np.pi))
+    else:
+        raise ValueError("prefactor must be 'code' or 'canonical'")
+
+    KI = A_COD / pref
+    KII = A_CSD / pref
+
+    # optional rotation to comparison frame (usually leave theta=0 for branched crack tips)
+    KI_rot, KII_rot = rotate_sifs(KI, KII, float(theta))
+
+    meta = dict(
+        rr_size=int(rr.size),
+        rmin=rmin,
+        rmax=rmax_used,
+        A_COD=A_COD,
+        A_CSD=A_CSD,
+        mu=mu,
+        kappa=kappa,
+        prefactor=prefactor,
+    )
+    return float(KI), float(KII), float(KI_rot), float(KII_rot), meta

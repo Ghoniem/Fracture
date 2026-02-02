@@ -180,6 +180,10 @@ class DCENetworkStaticV4:
             collocation_mode=collocation_mode,
             representation=rep_in,
             nq_stress=int(nq_stress),
+            tip_min_nodes=int(_ignored.get("tip_min_nodes", 0)),
+            tip_cluster=str(_ignored.get("tip_cluster", "power")),
+            tip_cluster_power=float(_ignored.get("tip_cluster_power", 2.0)),
+            other_min_panels=int(_ignored.get("other_min_panels", 1)),
         )
 
         offsets, junction_dof, branch_end_dof, nunk = allocate_unknowns(poly_panels, deg, crack_mode=crack_mode, junction_model=junction_model)

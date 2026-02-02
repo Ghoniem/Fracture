@@ -22,18 +22,6 @@ class Material:
 
 
 @dataclass(frozen=True)
-class Crack:
-    """Convenience container used only for endpoint-based utilities."""
-    length: float  # 2a
-    angle: float   # radians
-    center: tuple[float, float] = (0.0, 0.0)
-
-    @property
-    def half_length(self) -> float:
-        return 0.5 * self.length
-
-
-@dataclass(frozen=True)
 class AppliedStress:
     sigma_xx: float
     sigma_yy: float

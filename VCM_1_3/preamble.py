@@ -146,11 +146,18 @@ import fracture_utils.Usolver.build as build
 from fracture_utils.Usolver.material import Material, AppliedStress
 
 from fracture_utils.Uprocessor.results import DCEResultsNetworkV4
-from fracture_utils.Uprocessor import diagnostics as diagnostics
-from fracture_utils.Uprocessor.SIF import sif_from_cod_fit, cotterell_rice_K, rotate_sifs
-from fracture_utils.Uprocessor.SIF import pk_sif_from_window,sif_from_cod_fit_euclid_tip, solve_K_polyline
+from fracture_utils.Uprocessor import diagnostics as diagnostics 
 from fracture_utils.Uprocessor.PK import PKProcessor
-
+from fracture_utils.Uprocessor.SIF_cod import (
+    rotate_sifs,
+    cotterell_rice_K,
+    sif_from_cod_fit,
+    estimate_K_from_jump_near_tip,
+    estimate_KI_KII_from_jumps_near_tip,
+    sif_from_cod_fit_euclid_arrays,
+    euclid_tip_fit_from_edge,
+)
+from fracture_utils.Uprocessor .SIF_pk import ( pk_sif_from_window,)
 # ------------------------------------------------------------
 # Plotter imports
 # ------------------------------------------------------------
@@ -230,10 +237,14 @@ __all__ = [
     "PKProcessor",
     "DCEResultsNetworkV4",
     "diagnostics",
-    "sif_from_cod_fit",
-    "cotterell_rice_K",
     "rotate_sifs",
+    "cotterell_rice_K",
+    "sif_from_cod_fit",
+    "estimate_K_from_jump_near_tip",
+    "estimate_KI_KII_from_jumps_near_tip",
+    "sif_from_cod_fit_euclid_arrays",
+    "euclid_tip_fit_from_edge",
     "pk_sif_from_window",
-    "sif_from_cod_fit_euclid_tip",
-    "solve_K_polyline",
 ]
+
+

@@ -545,8 +545,21 @@ def discretize_polylines(
     collocation_mode: str,
     representation: str,
     nq_stress: int,
+    tip_min_nodes: int = 0,
+    tip_cluster: str = "power",
+    tip_cluster_power: float = 2.0,
+    other_min_panels: int = 1,
 ) -> List[dict]:
     use_tip_singular = (str(representation).lower().strip() == "singular")
+
+    deg = vertex_degrees(network)
+    tip_min_nodes = max(0, int(tip_min_nodes))
+    tip_min_panels = max(0, tip_min_nodes - 1)
+    other_min_panels = max(0, int(other_min_panels))
+    tip_cluster = str(tip_cluster).lower().strip()
+    tip_cluster_power = float(tip_cluster_power)
+    if not np.isfinite(tip_cluster_power) or tip_cluster_power <= 1.0:
+        tip_cluster_power = 2.0
 
     poly_panels: List[dict] = []
     for pid, p in enumerate(polylines):
@@ -554,14 +567,98 @@ def discretize_polylines(
         segL = np.array(p["segment_lengths"], float)
         L = float(p["total_length"])
 
+        # Total panels for this polyline (keep legacy scaling: ~2*ne_half for 'half' and 'full')
         Np = max(8, int(2 * ne_half))
 
-        if str(node_distribution).lower().strip() == "uniform":
-            s_nodes = np.linspace(0.0, L, Np + 1)
-        else:
-            theta = np.linspace(0.0, math.pi, Np + 1)
-            s_nodes = 0.5 * L * (1.0 - np.cos(theta))
+        # --- Option A: redistribute panels across segments, enforcing extra resolution on tip segments (deg-1 vertices)
+        nseg = int(len(segL))
+        if nseg <= 0:
+            continue
 
+        v_start = int(p.get('v_start', vids_path[0] if len(vids_path) else -1))
+        v_end   = int(p.get('v_end',   vids_path[-1] if len(vids_path) else -1))
+
+        tip_segs = []
+        if int(deg.get(v_start, 0)) == 1:
+            tip_segs.append(0)
+        if int(deg.get(v_end, 0)) == 1 and (nseg - 1) not in tip_segs:
+            tip_segs.append(nseg - 1)
+
+        # Base allocation: at least other_min_panels per segment
+        Nseg = [int(other_min_panels) for _ in range(nseg)]
+        for k in tip_segs:
+            if tip_min_panels > 0:
+                Nseg[k] = max(Nseg[k], int(tip_min_panels))
+
+        N_used = int(sum(Nseg))
+        if N_used > Np:
+            raise ValueError(
+                f"ne_half={ne_half} too small for tip_min_nodes={tip_min_nodes} and nseg={nseg}. "
+                f"Need at least total_panels >= {N_used}, but have {Np}."
+            )
+
+        R = int(Np - N_used)
+        others = [k for k in range(nseg) if k not in tip_segs]
+        if others:
+            q, r = divmod(R, len(others))
+            for k in others:
+                Nseg[k] += int(q)
+            for k in others[:r]:
+                Nseg[k] += 1
+        elif tip_segs:
+            q, r = divmod(R, len(tip_segs))
+            for k in tip_segs:
+                Nseg[k] += int(q)
+            for k in tip_segs[:r]:
+                Nseg[k] += 1
+        # else: single-seg polyline with no tips? nothing to distribute
+
+        # Build s_nodes by concatenating per-segment node sets
+        s_nodes_list = []
+        s0 = 0.0
+        for k in range(nseg):
+            Nk = int(max(1, Nseg[k]))
+            Le = float(segL[k])
+            if Le <= 0.0:
+                continue
+
+            # local param in [0,1] with optional one-sided clustering at deg-1 tip
+            if k in tip_segs and tip_cluster != 'uniform':
+                # cluster near the tip vertex end of this segment
+                if (k == 0) and (int(deg.get(v_start, 0)) == 1):
+                    end = 'start'
+                elif (k == nseg - 1) and (int(deg.get(v_end, 0)) == 1):
+                    end = 'end'
+                else:
+                    end = 'end'
+
+                u = np.linspace(0.0, 1.0, Nk + 1)
+                if tip_cluster == 'cheb':
+                    # symmetric clustering; then flip if needed
+                    th = np.linspace(0.0, math.pi, Nk + 1)
+                    xi = 0.5 * (1.0 - np.cos(th))
+                    if end == 'start':
+                        xi = 1.0 - xi
+                else:
+                    # one-sided power clustering (default)
+                    pwr = float(tip_cluster_power)
+                    if end == 'start':
+                        xi = u**pwr
+                    else:
+                        xi = 1.0 - (1.0 - u)**pwr
+            else:
+                # default: uniform within segment
+                xi = np.linspace(0.0, 1.0, Nk + 1)
+
+            s_local = s0 + Le * xi
+            if not s_nodes_list:
+                s_nodes_list.append(s_local)
+            else:
+                # avoid duplicating the shared node at segment boundaries
+                s_nodes_list.append(s_local[1:])
+            s0 += Le
+
+        s_nodes = np.concatenate(s_nodes_list) if s_nodes_list else np.linspace(0.0, float(L), Np + 1)
         if collocation_mode == "nodes" and Np >= 2:
             s_col = s_nodes[1:-1].copy()
         else:
