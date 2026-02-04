@@ -1,0 +1,1 @@
+The objective of this version VCM_1_3 is to create  general branch parametrizations with "polylines", "arcs", and "Bsplines" for crack networks.
