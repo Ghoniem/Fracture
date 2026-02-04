@@ -28,208 +28,6 @@ def rotate_sifs(K_I, K_II, theta):
 # POLYLINE tip-fit helpers  
 # -------------------------
 
-def solve_K_polyline(
-    net,
-    V,
-    ne_half,
-    edge_index_use,
-    a_fit_global,
-    *,
-    E,
-    nu,
-    plane,
-    sig_xx,
-    sig_yy,
-    sig_xy,
-    base_knobs,
-    fit_frac: float = 0.20,
-    min_segs: int = 2,
-    rmax_frac: float = 0.30,
-    rmin_frac: float = 1e-6,
-    min_pts: int = 8,
-    two_term: bool = True,
-    theta_rot_override=None,
-):
-    """
-    Polyline SIF extraction using a *multi-segment* Euclidean (distance-to-tip) COD/CSD fit.
-
-    This is the function that older notebooks called from Uprocessor/SIF.py.
-    It has been moved here (SIF_cod.py) as part of the SIF.py -> {SIF_cod,SIF_pk} split.
-
-    Key points
-    ----------
-    - Uses DCEResultsNetworkV4.reconstruct_cod_csd_panel_midpoints per edge segment.
-    - Builds a near-tip window by accumulating arclength over the last `fit_frac` of the polyline
-      and at least `min_segs` segments.
-    - Converts each segment's (COD,CSD) (defined in that segment's local basis) into the *tip*
-      basis before performing the Euclidean fit.
-    - Uses `sif_from_cod_fit_euclid_arrays` (the canonical implementation in this module).
-    - Returns both raw (KI,KII) and optionally rotated (KI_CR,KII_CR) using `rotate_sifs`.
-
-    Parameters are chosen to match the validation notebooks.
-    """
-
-    # ---- Local imports (avoid top-level circularity) ----
-    from fracture_utils.Usolver.material import Material, AppliedStress
-    from fracture_utils.Usolver.parametrization import DCENetworkStaticV4
-    from fracture_utils.Uprocessor.results import DCEResultsNetworkV4
-
-    plane_l = str(plane).lower().strip()
-    plane_stress = plane_l in ("stress", "plane_stress", "planestress")
-
-    mat = Material(E=float(E), nu=float(nu), plane_stress=bool(plane_stress))
-    mu = float(getattr(mat, "mu", float(E) / (2.0 * (1.0 + float(nu)))))
-    kappa = float(getattr(mat, "kappa", np.nan))
-    if not np.isfinite(kappa):
-        nu_ = float(nu)
-        kappa = (3.0 - nu_) / (1.0 + nu_) if plane_stress else (3.0 - 4.0 * nu_)
-
-    # applied stress (support multiple constructor signatures)
-    sx = float(sig_xx); sy = float(sig_yy); txy = float(sig_xy)
-    applied = None
-    for kw in (
-        dict(sigma_xx=sx, sigma_yy=sy, sigma_xy=txy),
-        dict(sig_xx=sx, sig_yy=sy, sig_xy=txy),
-        dict(sxx=sx, syy=sy, sxy=txy),
-        dict(sx=sx, sy=sy, txy=txy),
-    ):
-        try:
-            applied = AppliedStress(**kw)
-            break
-        except TypeError:
-            continue
-    if applied is None:
-        applied = AppliedStress(sx, sy, txy)
-
-    calc = DCENetworkStaticV4(mat, net, applied)
-    sol = calc.solve(ne_half=int(ne_half), **dict(base_knobs))
-    res = DCEResultsNetworkV4(calc, sol)
-
-    edge_index_use = int(edge_index_use)
-
-    # Tip frame: use reconstructor's ex if available; else last geometry segment
-    _, _, _, extra_tip = res.reconstruct_cod_csd_panel_midpoints(
-        edge_index=edge_index_use,
-        enforce_global_tip_zero=True,
-    )
-    extra_tip = dict(extra_tip) if isinstance(extra_tip, dict) else {}
-
-    V_arr = np.asarray(V, float)
-    if V_arr.ndim != 2 or V_arr.shape[1] < 3:
-        raise ValueError("V must be array (n,>=3) with columns [id,x,y,...]")
-    P = np.asarray(V_arr[:, 1:3], float)
-    if P.shape[0] < 2:
-        raise ValueError("V must contain at least 2 points to define a polyline.")
-
-    p_tip = np.asarray(V_arr[-1, 1:3], float)
-
-    ex_tip = extra_tip.get("ex", None)
-    if ex_tip is None:
-        ex_tip = P[-1] - P[-2]
-    ex_tip = np.asarray(ex_tip, float).reshape(2,)
-    exn = float(np.linalg.norm(ex_tip))
-    if exn <= 0:
-        ex_tip = np.array([1.0, 0.0], float)
-        exn = 1.0
-    ex_tip /= exn
-    ey_tip = np.array([-ex_tip[1], ex_tip[0]], float)
-    theta_tip = float(np.arctan2(ex_tip[1], ex_tip[0]))
-
-    # ---- Multi-segment window selection by arclength ----
-    seglen = np.linalg.norm(P[1:] - P[:-1], axis=1)
-    L = float(np.sum(seglen))
-    if not np.isfinite(L) or L <= 0.0:
-        raise ValueError("Invalid polyline total length")
-
-    if edge_index_use < 0 or edge_index_use >= len(seglen):
-        raise IndexError(f"edge_index_use={edge_index_use} out of range for {len(seglen)} polyline segments")
-
-    target = float(fit_frac) * L
-    acc = 0.0
-    j0 = edge_index_use
-    # walk backwards from tip segment
-    while j0 > 0 and (acc < target or (edge_index_use - j0 + 1) < int(min_segs)):
-        acc += float(seglen[j0])
-        j0 -= 1
-
-    xy_all = []
-    COD_all = []
-    CSD_all = []
-
-    for j in range(j0, edge_index_use + 1):
-        _, CODj, CSDj, extraj = res.reconstruct_cod_csd_panel_midpoints(
-            edge_index=int(j),
-            enforce_global_tip_zero=(int(j) == edge_index_use),
-        )
-        extraj = dict(extraj) if isinstance(extraj, dict) else {}
-
-        CODj = np.asarray(CODj, float).reshape(-1)
-        CSDj = np.asarray(CSDj, float).reshape(-1)
-
-        # Segment basis
-        ex_j = extraj.get("ex", None)
-        if ex_j is None:
-            ex_j = P[j + 1] - P[j]
-        ex_j = np.asarray(ex_j, float).reshape(2,)
-        exjn = float(np.linalg.norm(ex_j))
-        if exjn <= 0:
-            ex_j = np.array([1.0, 0.0], float)
-            exjn = 1.0
-        ex_j /= exjn
-        ey_j = np.array([-ex_j[1], ex_j[0]], float)
-
-        # Midpoint coordinates
-        xy_mid = extraj.get("xy_mid", None)
-        if xy_mid is None:
-            # fallback: geometric midpoint repeated
-            pm = 0.5 * (P[j] + P[j + 1])
-            xy_mid = np.repeat(pm[None, :], CODj.size, axis=0)
-        else:
-            xy_mid = np.asarray(xy_mid, float)
-
-        # segment-local jumps -> global vector
-        jump_global = CODj[:, None] * ey_j[None, :] + CSDj[:, None] * ex_j[None, :]
-
-        # global -> tip frame scalars
-        COD_tipframe = jump_global @ ey_tip
-        CSD_tipframe = jump_global @ ex_tip
-
-        xy_all.append(xy_mid)
-        COD_all.append(COD_tipframe)
-        CSD_all.append(CSD_tipframe)
-
-    xy_mid_all = np.vstack(xy_all)
-    COD_fit = np.concatenate(COD_all)
-    CSD_fit = np.concatenate(CSD_all)
-
-    KI, KII, meta_fit = sif_from_cod_fit_euclid_arrays(
-        xy_mid=xy_mid_all,
-        COD=COD_fit,
-        CSD=CSD_fit,
-        p_tip=p_tip,
-        a_fit=float(a_fit_global),
-        mu=mu,
-        kappa=kappa,
-        rmin_frac=float(rmin_frac),
-        rmax_frac=float(rmax_frac),
-        min_pts=int(min_pts),
-        two_term=bool(two_term),
-    )
-
-    theta_rot = float(theta_rot_override) if (theta_rot_override is not None) else (-2.0 * theta_tip)
-    KI_CR, KII_CR = rotate_sifs(KI, KII, theta_rot)
-
-    meta = dict(
-        theta_tip=theta_tip,
-        theta_rot=theta_rot,
-        p_tip=np.asarray(p_tip, float),
-        fit_frac=float(fit_frac),
-        seg_window=(int(j0), int(edge_index_use)),
-        meta_fit=dict(meta_fit),
-    )
-    return float(KI), float(KII), float(KI_CR), float(KII_CR), meta
-
-
 # -------------------------
 # Euclidean tip-fit helper
 # -------------------------
@@ -256,6 +54,10 @@ def cotterell_rice_K(alpha_total, a_arc, sxx, syy, sxy):
         + sxy * (np.cos(3.0 * alpha_total/2) + c * s**2)
     )
     return float(KI), float(KII)
+
+# -------------------------
+# SIF rotation formulas
+# -------------------------
 
 
 def sif_from_cod_fit(
@@ -599,3 +401,98 @@ def euclid_tip_fit_from_edge(
 
     meta = dict(meta_fit=meta_fit, mu=mu, kappa=kappa, theta=float(theta), rotated=bool(rotate))
     return float(KI), float(KII), float(KI_out), float(KII_out), meta
+
+
+# =====================================================================
+# OO Facade (v2.1): organize SIF utilities into three semantic classes
+#   1) DisplacementSIF            : COD/CSD-based estimators
+#   2) DisplacementGradientSIF    : jump / gradient-based estimators
+#   3) AnalysisSIF                : analytical formulas and transformations
+#
+# NOTE:
+# - Implementations below reuse the existing free functions in this module.
+# - Backward-compatible free-function API is preserved (aliases are provided).
+# =====================================================================
+
+class DisplacementSIF:
+    """
+    Displacement-based SIF estimators (COD/CSD fits).
+
+    This is a thin namespace facade over the module-level implementations:
+      - sif_from_cod_fit
+      - sif_from_cod_fit_euclid_arrays
+      - euclid_tip_fit_from_edge
+      - solve_K_polyline
+      - solve_K
+    """
+
+    @staticmethod
+    def from_cod_fit(*args, **kwargs):
+        return sif_from_cod_fit(*args, **kwargs)
+
+    @staticmethod
+    def euclid_arrays(*args, **kwargs):
+        return sif_from_cod_fit_euclid_arrays(*args, **kwargs)
+
+    @staticmethod
+    def euclid_from_edge(*args, **kwargs):
+        return euclid_tip_fit_from_edge(*args, **kwargs)
+
+    @staticmethod
+    def polyline(*args, **kwargs):
+        return solve_K_polyline(*args, **kwargs)
+
+    @staticmethod
+    def solve(*args, **kwargs):
+        return solve_K(*args, **kwargs)
+
+
+class DisplacementGradientSIF:
+    """
+    Displacement-gradient / jump-based SIF estimators.
+
+    Wraps:
+      - estimate_K_from_jump_near_tip
+      - estimate_KI_KII_from_jumps_near_tip
+    """
+
+    @staticmethod
+    def from_jump(*args, **kwargs):
+        return estimate_K_from_jump_near_tip(*args, **kwargs)
+
+    @staticmethod
+    def from_cod_csd(*args, **kwargs):
+        return estimate_KI_KII_from_jumps_near_tip(*args, **kwargs)
+
+
+class AnalysisSIF:
+    """
+    Analytical SIF utilities and transformations.
+
+    Wraps:
+      - rotate_sifs
+      - cotterell_rice_K
+    """
+
+    @staticmethod
+    def rotate(*args, **kwargs):
+        return rotate_sifs(*args, **kwargs)
+
+    @staticmethod
+    def cotterell_rice(*args, **kwargs):
+        return cotterell_rice_K(*args, **kwargs)
+
+__all__ = [
+    "DisplacementSIF",
+    "DisplacementGradientSIF",
+    "AnalysisSIF",
+    "sif_from_cod_fit",
+    "sif_from_cod_fit_euclid_arrays",
+    "euclid_tip_fit_from_edge",
+    "solve_K",
+    "solve_K_polyline",
+    "estimate_K_from_jump_near_tip",
+    "estimate_KI_KII_from_jumps_near_tip",
+    "rotate_sifs",
+    "cotterell_rice_K",
+]

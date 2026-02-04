@@ -152,6 +152,34 @@ sif_legacy_mod = _try_import_many([
     "fracture_utils.Uprocessor.sif",
 ])
 
+# --- OO facades (preferred notebook API)
+DisplacementSIF = _resolve_any([sif_cod_mod], ['DisplacementSIF'])
+DisplacementGradientSIF = _resolve_any([sif_cod_mod], ['DisplacementGradientSIF'])
+AnalysisSIF = _resolve_any([sif_cod_mod], ['AnalysisSIF'])
+EnergyReleaseRateSIF = _resolve_any([sif_pk_mod], ['EnergyReleaseRateSIF'])
+
+if DisplacementSIF is None or DisplacementGradientSIF is None or AnalysisSIF is None:
+    # If the repo hasn't been updated to the OO facade yet, provide informative stubs.
+    class _MissingSIFClass:
+        def __init__(self, name: str):
+            self._name = name
+        def __getattr__(self, attr):
+            raise AttributeError(
+                f"{self._name} is not available. Update fracture_utils/Uprocessor/SIF_cod.py to the OO facade version."
+            )
+    DisplacementSIF = DisplacementSIF or _MissingSIFClass('DisplacementSIF')
+    DisplacementGradientSIF = DisplacementGradientSIF or _MissingSIFClass('DisplacementGradientSIF')
+    AnalysisSIF = AnalysisSIF or _MissingSIFClass('AnalysisSIF')
+
+if EnergyReleaseRateSIF is None:
+    class _MissingERRClass:
+        def __getattr__(self, attr):
+            raise AttributeError(
+                "EnergyReleaseRateSIF is not available. Update fracture_utils/Uprocessor/SIF_pk.py to include the class facade."
+            )
+    EnergyReleaseRateSIF = _MissingERRClass()
+
+
 cotterell_rice_K = _resolve_any([sif_cod_mod, sif_legacy_mod], ["cotterell_rice_K"])
 sif_from_cod_fit = _resolve_any([sif_cod_mod, sif_legacy_mod], ["sif_from_cod_fit"])
 solve_K = _resolve_any([sif_cod_mod, sif_legacy_mod], ["solve_K"])
@@ -327,4 +355,9 @@ __all__ = [
     "plot_cod_overlay",
     "plot_cod_error_vs_knob",
     "plot_cod_error_summary",
+    "DisplacementSIF",
+    "DisplacementGradientSIF",
+    "AnalysisSIF",
+    "EnergyReleaseRateSIF",
+
 ]
