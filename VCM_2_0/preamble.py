@@ -157,7 +157,7 @@ sif_from_cod_fit = _resolve_any([sif_cod_mod, sif_legacy_mod], ["sif_from_cod_fi
 solve_K = _resolve_any([sif_cod_mod, sif_legacy_mod], ["solve_K"])
 rotate_sifs = _resolve_any([sif_cod_mod, sif_legacy_mod], ["rotate_sifs"])
 euclid_tip_fit_from_edge = _resolve_any([sif_cod_mod, sif_legacy_mod], ["euclid_tip_fit_from_edge"])
-
+pk_sif_from_window = _resolve_any([sif_cod_mod, sif_legacy_mod], ["pk_sif_from_window"])
 # Polyline wrapper
 _SOLVE_K_POLYLINE_NAMES = [
     "solve_K_polyline",
@@ -327,4 +327,5 @@ __all__ = [
     "plot_cod_overlay",
     "plot_cod_error_vs_knob",
     "plot_cod_error_summary",
+    "pk_sif_from_window"
 ]
