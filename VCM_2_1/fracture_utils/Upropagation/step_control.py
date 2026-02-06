@@ -1,16 +1,23 @@
-"""Adaptive step-size selection for crack growth.
+"""Step-size selection strategies for crack growth.
 
-Implements the f / 2f / (f/2) search with angle (+ optional keff) stability checks.
+Two modes are supported (via PropagationConfig.step_mode):
+
+- fixed_step: Δa = f_fixed * L_total (no recursion, no extra solves)
+- adaptive_step: legacy f / 2f / (f/2) stability search (angle + optional keff)
+
+This module is solver-agnostic; it relies on `evaluator.solve(...)` and
+`evaluator.eval_tip(...)` when adaptive stepping is enabled.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Protocol
 
 from .config import PropagationConfig
 from .results import TrialRecord
 from .tip_state import TipState
+
 
 @dataclass
 class StepDecision:
@@ -22,7 +29,63 @@ class StepDecision:
     reason: str
     trials: list[TrialRecord]
 
-class StepController:
+
+class StepControllerProto(Protocol):
+    def choose_step(
+        self,
+        *,
+        evaluator,
+        base_network,
+        base_sol: Dict[str, Any],
+        tip: TipState,
+        theta0: float,
+        keff0: float,
+        build_candidate,
+        total_length: float,
+    ) -> StepDecision: ...
+
+
+class FixedStepController:
+    """Always accept a single step using cfg.f_fixed.
+
+    This mode performs *no* extra solves. It is the recommended baseline while
+    debugging propagation geometry and direction logic.
+    """
+
+    def __init__(self, cfg: PropagationConfig):
+        self.cfg = cfg
+
+    def choose_step(
+        self,
+        *,
+        evaluator,          # unused
+        base_network,       # unused
+        base_sol: Dict[str, Any],  # unused
+        tip: TipState,      # unused
+        theta0: float,
+        keff0: float,
+        build_candidate,    # unused
+        total_length: float,
+    ) -> StepDecision:
+        cfg = self.cfg
+        f = float(cfg.f_fixed)
+        da = float(f * float(total_length))
+        if cfg.delta_a_min > 0.0:
+            da = max(da, float(cfg.delta_a_min))
+        return StepDecision(
+            accepted=True,
+            f=f,
+            delta_a=da,
+            theta=float(theta0),
+            keff=float(keff0),
+            reason="fixed_step",
+            trials=[],
+        )
+
+
+class AdaptiveStepController:
+    """Adaptive f selection using stability between f and 2f (shrinking by /2)."""
+
     def __init__(self, cfg: PropagationConfig):
         self.cfg = cfg
 
@@ -59,15 +122,19 @@ class StepController:
             da1 = float(f * total_length)
             da2 = float(min(2.0 * f, cfg.f_max) * total_length)
 
+            if cfg.delta_a_min > 0.0:
+                da1 = max(da1, float(cfg.delta_a_min))
+                da2 = max(da2, float(cfg.delta_a_min))
+
             # --- Trial at f
-            net1 = build_candidate(base_network, tip, theta0, da1)
+            net1 = build_candidate(base_network, tip, float(theta0), da1)
             sol1 = evaluator.solve(net1)
             ev1 = evaluator.eval_tip(sol1, tip)
             trials.append(TrialRecord(f=f, delta_a=da1, theta=ev1.theta, keff=ev1.keff, accepted=False))
 
             # --- Trial at 2f (if distinct)
             if da2 > da1 * (1.0 + 1e-12):
-                net2 = build_candidate(base_network, tip, theta0, da2)
+                net2 = build_candidate(base_network, tip, float(theta0), da2)
                 sol2 = evaluator.solve(net2)
                 ev2 = evaluator.eval_tip(sol2, tip)
                 trials.append(TrialRecord(f=min(2.0*f, cfg.f_max), delta_a=da2, theta=ev2.theta, keff=ev2.keff, accepted=False))
@@ -86,3 +153,10 @@ class StepController:
             f *= 0.5
 
         return StepDecision(False, f, float(f*total_length), float(theta0), float(keff0), "max_trials", trials)
+
+
+def make_step_controller(cfg: PropagationConfig) -> StepControllerProto:
+    """Factory: build controller from cfg.step_mode."""
+    if str(getattr(cfg, "step_mode", "fixed_step")) == "adaptive_step":
+        return AdaptiveStepController(cfg)
+    return FixedStepController(cfg)
