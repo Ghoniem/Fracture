@@ -48,7 +48,7 @@ class GeometryUpdater:
         CrackNetworkV4
             New network with the extra segment appended at v_tip.
         """
-                v_tip = int(getattr(tip, "v_tip"))
+        v_tip = int(getattr(tip, "v_tip"))
         x0 = np.asarray(getattr(tip, "x_tip"), float).reshape(2,)
 
         # Robust outward tangent from topology (do NOT trust tip.t_hat; it may be oriented

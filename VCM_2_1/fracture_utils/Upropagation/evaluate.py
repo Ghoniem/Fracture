@@ -1,21 +1,10 @@
-"""Candidate evaluator for propagation.
-
-Uses the existing, battle-tested SIF pipeline in `fracture_utils.Uprocessor.SIF_cod`
-via `DisplacementSIF.euclid_from_edge(...)`.
-
-Adds robustness for large crack-growth simulations:
-- Adaptive tip-fit retry ladder (rmax_frac/min_pts) on "window too small" failures.
-- Optional ne_half escalation (re-solve) if the fit still fails.
-
-This module is intentionally solver-stack aware, but keeps imports local to avoid
-heavy import-time costs.
-"""
+# fracture_utils/Upropagation/evaluate.py
+# CandidateEvaluator providing solve(network)->sol_dict and eval_tip(sol_or_res, tip).
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple, Union, List
-
+from typing import Any, Dict, Optional, Tuple
 import numpy as np
 
 
@@ -28,93 +17,111 @@ class TipEval:
     meta: Dict[str, Any]
 
 
-class CandidateEvaluator:
-    """Adapter between Usolver and Upropagation for solving + tip evaluation."""
+def _import_solver_stack():
+    # Calc
+    DCENetworkStaticV4 = None
+    last = None
+    for mod, name in [
+        ("fracture_utils.Usolver.parametrization", "DCENetworkStaticV4"),
+        ("fracture_utils.Usolver.parametrization", "DCENetworkStatic"),
+    ]:
+        try:
+            m = __import__(mod, fromlist=[name])
+            DCENetworkStaticV4 = getattr(m, name)
+            break
+        except Exception as e:
+            last = e
+    if DCENetworkStaticV4 is None:
+        raise ImportError(f"Could not import DCENetworkStaticV4 from Usolver.parametrization. Last error: {last}")
 
+    # Results
+    DCEResultsNetworkV4 = None
+    last = None
+    for mod, name in [
+        ("fracture_utils.Uprocessor.results", "DCEResultsNetworkV4"),
+        ("fracture_utils.Uprocessor.results_v4", "DCEResultsNetworkV4"),
+    ]:
+        try:
+            m = __import__(mod, fromlist=[name])
+            DCEResultsNetworkV4 = getattr(m, name)
+            break
+        except Exception as e:
+            last = e
+    if DCEResultsNetworkV4 is None:
+        raise ImportError(f"Could not import DCEResultsNetworkV4 from Uprocessor.results. Last error: {last}")
+
+    return DCENetworkStaticV4, DCEResultsNetworkV4
+
+
+class CandidateEvaluator:
     def __init__(
         self,
         *,
-        material,
-        applied,
-        solver_kwargs: Optional[Dict[str, Any]] = None,
-        direction_law=None,
-        sif_kwargs: Optional[Dict[str, Any]] = None,
-        # retry ladders
-        rmax_frac_ladder: Optional[List[float]] = None,
-        min_pts_ladder: Optional[List[int]] = None,
-        # mesh escalation
-        enable_ne_half_escalation: bool = True,
-        ne_half_growth: float = 1.5,
+        material: Any,
+        applied: Any,
+        solver_kwargs: Dict[str, Any],
+        direction_law: Any,
+        rmax_frac: float = 0.12,
+        min_pts: int = 10,
+        two_term: bool = False,
+        enable_ne_half_escalation: bool = False,
         ne_half_max: int = 240,
-        ne_half_escalations_max: int = 2,
     ):
         self.material = material
         self.applied = applied
-        self.solver_kwargs = dict(solver_kwargs or {})
+        self.solver_kwargs = dict(solver_kwargs)
         self.direction_law = direction_law
 
-        # kwargs passed to DisplacementSIF.euclid_from_edge (rmax_frac, min_pts, two_term, etc.)
-        self.sif_kwargs = dict(sif_kwargs or {})
+        self.rmax_frac = float(rmax_frac)
+        self.min_pts = int(min_pts)
+        self.two_term = bool(two_term)
 
-        # retry ladders
-        self.rmax_frac_ladder = list(rmax_frac_ladder or [0.08, 0.12, 0.18, 0.25])
-        self.min_pts_ladder = list(min_pts_ladder or [10, 8, 6])
-
-        # mesh escalation controls
         self.enable_ne_half_escalation = bool(enable_ne_half_escalation)
-        self.ne_half_growth = float(ne_half_growth)
         self.ne_half_max = int(ne_half_max)
-        self.ne_half_escalations_max = int(ne_half_escalations_max)
 
-    # -------------------------
-    # Solve
-    # -------------------------
-    def solve(self, network) -> Dict[str, Any]:
-        """Solve elastic BVP for the given network and return solver dict with private handles."""
-        from fracture_utils.Usolver.parametrization import DCENetworkStaticV4  # local import
+        self._DCENetworkStaticV4 = None
+        self._DCEResultsNetworkV4 = None
 
+    def _stack(self):
+        if self._DCENetworkStaticV4 is None or self._DCEResultsNetworkV4 is None:
+            self._DCENetworkStaticV4, self._DCEResultsNetworkV4 = _import_solver_stack()
+        return self._DCENetworkStaticV4, self._DCEResultsNetworkV4
+
+    # ---- Public API expected by StepController / Propagator
+
+    def solve(self, network: Any) -> Dict[str, Any]:
+        """Return solver dict and attach calc handle under '_calc' for downstream reconstruction."""
+        DCENetworkStaticV4, _DCEResultsNetworkV4 = self._stack()
         calc = DCENetworkStaticV4(self.material, network, self.applied)
         sol = calc.solve(**self.solver_kwargs)
-
-        # Attach private handles for downstream evaluation
-        sol["_calc"] = calc
-        sol["_network"] = network
+        if isinstance(sol, dict):
+            sol["_calc"] = calc
         return sol
 
-    def solve_results(self, network):
-        """Solve and return (res, sol) where res is DCEResultsNetworkV4."""
-        sol = self.solve(network)
-        res = self._to_results(sol)
-        return res, sol
+    def solve_results(self, network: Any):
+        """Convenience: return DCEResultsNetworkV4."""
+        DCENetworkStaticV4, DCEResultsNetworkV4 = self._stack()
+        calc = DCENetworkStaticV4(self.material, network, self.applied)
+        sol = calc.solve(**self.solver_kwargs)
+        return DCEResultsNetworkV4(calc, sol)
 
-    # -------------------------
-    # Tip evaluation
-    # -------------------------
-    def eval_tip(self, res_or_sol: Union[Dict[str, Any], Any], tip) -> TipEval:
-        """
-        Compute (KI,KII), keff, theta for a tip on an already-solved configuration.
+    def _ensure_results(self, res_or_sol: Any):
+        if hasattr(res_or_sol, "calc"):
+            return res_or_sol
+        if isinstance(res_or_sol, dict) and "_calc" in res_or_sol:
+            _DCENetworkStaticV4, DCEResultsNetworkV4 = self._stack()
+            calc = res_or_sol["_calc"]
+            return DCEResultsNetworkV4(calc, res_or_sol)
+        return res_or_sol
 
-        Accepts:
-        - DCEResultsNetworkV4-like object (preferred), OR
-        - solver dict returned by `solve(...)`.
-        """
-        res = self._ensure_results(res_or_sol)
+    def _edge_index_for_tip(self, network: Any, tip) -> int:
+        v_tip = int(getattr(tip, "v_tip", getattr(tip, "vid", -1)))
+        for i, e in enumerate(getattr(network, "edges", [])):
+            if int(getattr(e, "v0")) == v_tip or int(getattr(e, "v1")) == v_tip:
+                return int(i)
+        raise RuntimeError(f"Could not find an edge incident to tip vertex {v_tip}.")
 
-        KI, KII, meta = self._euclid_tip_fit_with_retries(res, tip)
-        KI = float(KI); KII = float(KII)
-        keff = float(np.sqrt(KI * KI + KII * KII))
-        theta = float(self.direction_law.theta(KI, KII) if self.direction_law is not None else 0.0)
-        return TipEval(KI=KI, KII=KII, keff=keff, theta=theta, meta=dict(meta or {}))
-
-    # -------------------------
-    # Robust euclid tip-fit
-    # -------------------------
-    def _euclid_tip_fit_with_retries(self, res, tip) -> Tuple[float, float, Dict[str, Any]]:
-        """
-        Try euclid tip-fit with an adaptive ladder over (rmax_frac, min_pts).
-
-        Raises the last exception if all ladder attempts fail.
-        """
+    def _euclid_tip_fit(self, res: Any, tip) -> Tuple[float, float, Dict[str, Any]]:
         from fracture_utils.Uprocessor.SIF_cod import DisplacementSIF
 
         calc = getattr(res, "calc", None)
@@ -123,128 +130,67 @@ class CandidateEvaluator:
 
         network = getattr(calc, "net", None) or getattr(calc, "network", None)
         if network is None:
-            # fall back to solver dict private handle
-            sol = getattr(res, "sol", None)
-            if isinstance(sol, dict):
-                network = sol.get("_network", None)
-        if network is None:
-            raise RuntimeError("Unable to locate network from results object.")
+            raise RuntimeError("res.calc does not expose .net or .network")
 
-        v_tip = self._tip_vertex_id(tip)
-        tip_xy = np.asarray(getattr(tip, "x_tip", None), float).reshape(2,)
-        edge_index = self._incident_edge_index(network, v_tip)
+        edge_index = self._edge_index_for_tip(network, tip)
+        tip_xy = np.asarray(getattr(tip, "x_tip"), float).reshape(2,)
+        a_fit = float(getattr(tip, "total_length", 0.0)) or 1.0
 
-        a_fit = float(getattr(tip, "total_length", 0.0)) or float(self._total_crack_length(network))
+        KI, KII, *_rest = DisplacementSIF.euclid_from_edge(
+            res,
+            edge_index=int(edge_index),
+            tip_xy=tip_xy,
+            a_fit=float(a_fit),
+            material=self.material,
+            rotate=False,
+            rmax_frac=float(self.rmax_frac),
+            min_pts=int(self.min_pts),
+            two_term=bool(self.two_term),
+        )
+        meta = _rest[-1] if _rest else {}
+        return float(KI), float(KII), dict(meta or {})
 
-        base_kwargs = dict(self.sif_kwargs)
-        # Use current defaults if provided; still allow ladder escalation above them.
-        r0 = float(base_kwargs.pop("rmax_frac", self.rmax_frac_ladder[0]))
-        m0 = int(base_kwargs.pop("min_pts", self.min_pts_ladder[0]))
+    def eval_tip(self, res_or_sol: Any, tip) -> TipEval:
+        res = self._ensure_results(res_or_sol)
 
-        r_ladder = [r0] + [r for r in self.rmax_frac_ladder if r != r0]
-        m_ladder = [m0] + [m for m in self.min_pts_ladder if m != m0]
-
+        KI = KII = 0.0
+        meta: Dict[str, Any] = {}
         last_err: Optional[Exception] = None
 
-        for rmax_frac in r_ladder:
-            for min_pts in m_ladder:
-                try:
-                    KI, KII, _, _, meta = DisplacementSIF.euclid_from_edge(
-                        res,
-                        edge_index=int(edge_index),
-                        tip_xy=tip_xy,
-                        a_fit=float(a_fit),
-                        material=calc.material,
-                        rotate=False,
-                        rmax_frac=float(rmax_frac),
-                        min_pts=int(min_pts),
-                        **base_kwargs,
-                    )
-                    return float(KI), float(KII), dict(meta or {})
-                except Exception as e:
-                    last_err = e
-                    if not self._is_window_too_small(e):
-                        # For other failures, don't keep laddering blindly.
-                        raise
-                    # else: continue ladder
+        n_try = 1
+        if self.enable_ne_half_escalation:
+            n_try = 4
 
-        # Exhausted ladder
-        assert last_err is not None
-        raise last_err
+        for _ in range(n_try):
+            try:
+                KI, KII, meta = self._euclid_tip_fit(res, tip)
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+                msg = str(e).lower()
+                if (not self.enable_ne_half_escalation) or ("window too small" not in msg):
+                    break
 
-    @staticmethod
-    def _is_window_too_small(exc: Exception) -> bool:
-        msg = str(exc).lower()
-        return ("window too small" in msg) or ("try increasing rmax_frac" in msg) or ("rr.size" in msg)
+                # escalate ne_half and re-solve based on calc.net
+                ne_half = int(self.solver_kwargs.get("ne_half", 60))
+                ne_half_new = min(self.ne_half_max, max(ne_half + 10, 2 * ne_half))
+                if ne_half_new <= ne_half:
+                    break
+                self.solver_kwargs["ne_half"] = ne_half_new
 
-    # -------------------------
-    # Utilities: results conversion + geometry helpers
-    # -------------------------
-    def _ensure_results(self, res_or_sol):
-        if isinstance(res_or_sol, dict):
-            return self._to_results(res_or_sol)
-        return res_or_sol
+                calc = getattr(res, "calc", None)
+                network = getattr(calc, "net", None) or getattr(calc, "network", None)
+                if network is None:
+                    break
+                # res becomes new results
+                res = self.solve_results(network)
 
-    @staticmethod
-    def _to_results(sol: Dict[str, Any]):
-        # Preferred: your repo defines this in Uprocessor.results
-        try:
-            from fracture_utils.Uprocessor.results import DCEResultsNetworkV4
-            calc = sol.get("_calc", None)
-            if calc is None:
-                raise RuntimeError("Solution dict missing _calc. Use CandidateEvaluator.solve(network).")
-            return DCEResultsNetworkV4(calc, sol)
-        except Exception:
-            # If results wrapper lives elsewhere, raise a clear error.
-            raise ImportError("DCEResultsNetworkV4 not found. Expected in fracture_utils.Uprocessor.results.")
+        if last_err is not None:
+            raise last_err
 
-    @staticmethod
-    def _tip_vertex_id(tip) -> int:
-        for name in ("v_tip", "vid", "vertex_id"):
-            if hasattr(tip, name):
-                return int(getattr(tip, name))
-        raise ValueError("Tip object does not expose v_tip/vid/vertex_id.")
+        KI = float(KI); KII = float(KII)
+        keff = float(np.hypot(KI, KII))
+        theta = float(self.direction_law.theta(KI, KII) if self.direction_law is not None else 0.0)
 
-    @staticmethod
-    def _incident_edge_index(network, v_tip: int) -> int:
-        """Pick a network edge index incident to v_tip. Works for simple chains."""
-        v = network.V(int(v_tip))
-        if len(v.edges) < 1:
-            raise ValueError(f"tip vertex {v_tip} has no incident edges.")
-        eid = int(v.edges[0])
-        # Network edges list order is used as edge_index in many of your utilities.
-        for i, e in enumerate(network.edges):
-            if int(e.id) == eid:
-                return int(i)
-        # fallback: return 0
-        return 0
-
-    @staticmethod
-    def _total_crack_length(network) -> float:
-        L = 0.0
-        for e in network.edges:
-            p0 = network.vertex_coords(int(e.v0))
-            p1 = network.vertex_coords(int(e.v1))
-            L += float(np.hypot(*(p1 - p0)))
-        return float(L)
-
-    # -------------------------
-    # Ne_half escalation helper (used by propagator)
-    # -------------------------
-    def escalate_ne_half(self) -> bool:
-        """
-        Increase ne_half in solver_kwargs (in-place) if possible.
-
-        Returns True if increased, False if already at max or ne_half missing.
-        """
-        if "ne_half" not in self.solver_kwargs:
-            return False
-        cur = int(self.solver_kwargs["ne_half"])
-        if cur >= self.ne_half_max:
-            return False
-        new = int(np.ceil(cur * self.ne_half_growth))
-        new = min(new, self.ne_half_max)
-        if new <= cur:
-            new = min(cur + 10, self.ne_half_max)
-        self.solver_kwargs["ne_half"] = int(new)
-        return True
+        return TipEval(KI=KI, KII=KII, keff=keff, theta=theta, meta=meta)

@@ -1,194 +1,162 @@
-"""High-level propagation orchestrator.
-
-This version:
-- Supports step_mode in PropagationConfig via StepController (fixed/adaptive).
-- Delegates ALL network topology operations (degrees, polylines, tip extraction) to
-  Upropagation.network_ops, which prefers the user's Ugenerator package if available.
-- Avoids import-time failures by keeping optional imports local.
-"""
+# fracture_utils/Upropagation/propagator.py
+# CrackPropagator supporting fixed_step and adaptive_step (StepController signature in step_control.py).
 
 from __future__ import annotations
 
-from typing import List, Optional, TYPE_CHECKING
 from dataclasses import dataclass
+from typing import Any, List
 import numpy as np
-
-from .config import PropagationConfig
-from .toughness import ToughnessField
-from .direction import DirectionLaw
-from .step_control import StepController
-from .geometry_update import GeometryUpdater
-from .results import PropagationResult, TipPropagationReport
-from .network_ops import get_network_ops, PolylinePath
-
-if TYPE_CHECKING:
-    from fracture_utils.Usolver.network import CrackNetworkV4
-    from .tip_state import TipState
 
 
 @dataclass
-class _SolveBundle:
-    res: object
-    sol: dict
-    total_length: float
-    polylines: List[PolylinePath]
+class TipPropagationReport:
+    tip_vid: int
+    which: str
+    grew: bool
+    delta_a: float
+    theta: float
+    keff: float
+    KI: float
+    KII: float
+    reason: str = ""
+
+
+@dataclass
+class PropagationResult:
+    network_new: Any
+    reports: List[TipPropagationReport]
 
 
 class CrackPropagator:
-    """Orchestrates one propagation increment for a network (current v1: open polylines)."""
-
     def __init__(
         self,
         *,
-        cfg: PropagationConfig,
-        evaluator,
-        toughness: ToughnessField,
-        direction_law: DirectionLaw,
-        step_controller: Optional[StepController] = None,
-        updater: Optional[GeometryUpdater] = None,
-        remesh_policy: Optional[object] = None,
-        prefer_ugenerator: bool = True,
+        cfg: Any,
+        evaluator: Any,
+        toughness: Any,
+        direction_law: Any,
+        remesh_policy: Any = None,
+        updater: Any = None,
     ):
         self.cfg = cfg
         self.evaluator = evaluator
         self.toughness = toughness
         self.direction_law = direction_law
-        self.step_controller = step_controller or StepController(cfg)
-        self.updater = updater or GeometryUpdater()
         self.remesh_policy = remesh_policy
-        self.netops = get_network_ops(prefer_ugenerator=prefer_ugenerator)
+        self.updater = updater
 
-    # -------------------------
-    # Main entry point
-    # -------------------------
-    def grow_one_increment(self, network: "CrackNetworkV4") -> PropagationResult:
-        """Run a single growth increment: decide and apply tip extensions."""
-        bundle = self._solve_bundle_with_escalation(network, escalations=0)
+        # Step controller is only used for adaptive_step
+        self.step_controller = None
+        try:
+            from .step_control import StepController
+            self.step_controller = StepController(cfg)
+        except Exception:
+            self.step_controller = None
 
-        # topology via backend
-        deg = self.netops.degree_map(network)
-        polylines = bundle.polylines
+    def _get_updater(self):
+        if self.updater is not None:
+            return self.updater
+        from .geometry_update import GeometryUpdater
+        return GeometryUpdater()
 
-        # tip extraction via backend (returns TipState objects)
-        tips = self.netops.extract_deg1_tips(network, polylines, deg)
+    def grow_one_increment(self, network: Any) -> PropagationResult:
+        from .network_ops import get_netops
 
+        netops = get_netops()
+        deg = netops.degree_map(network)
+        polylines = netops.extract_open_polylines(network)
+        tips = netops.extract_deg1_tips(network, polylines, deg) or []
+
+        if len(tips) == 0:
+            return PropagationResult(network_new=network, reports=[])
+
+        updater = self._get_updater()
         reports: List[TipPropagationReport] = []
-        net_work = network
+        net_new = network
 
-        def build_candidate(net_base, tip: "TipState", theta: float, delta_a: float):
-            return self.updater.extend_tip(net_base, tip, theta=theta, delta_a=delta_a)
+        # Baseline solve once (solver dict + calc handle)
+        base_sol = self.evaluator.solve(network)
+
+        step_mode = str(getattr(self.cfg, "step_mode", "fixed_step")).lower()
+
+        # Helper to build a candidate network for StepController
+        def build_candidate(net_base, tip, theta, delta_a):
+            return updater.extend_tip(net_base, tip, theta=float(theta), delta_a=float(delta_a))
 
         for tip in tips:
-            tev0 = self._safe_eval_tip(bundle, tip, reports)
-            if tev0 is None:
-                continue
+            which = str(getattr(getattr(tip, "tip_id", tip), "which", getattr(tip, "which", "unknown")))
+            vid = int(getattr(tip, "v_tip", getattr(tip, "vid", -1)))
+            Ltot = float(getattr(tip, "total_length", 0.0))
 
-            Kc = float(self.toughness.Kc(float(tip.x_tip[0]), float(tip.x_tip[1])))
-            if float(tev0.keff) <= Kc:
-                reports.append(
-                    TipPropagationReport(
-                        pid=int(tip.tip_id.pid),
-                        which=str(tip.tip_id.which),
-                        grew=False,
-                        reason="below_toughness",
-                        KI=float(tev0.KI),
-                        KII=float(tev0.KII),
-                        keff=float(tev0.keff),
-                        theta=float(tev0.theta),
-                        delta_a=0.0,
-                    )
-                )
-                continue
+            # Evaluate baseline SIF/direction (from already-solved base_sol)
+            tev0 = self.evaluator.eval_tip(base_sol, tip)
+            KI0 = float(tev0.KI); KII0 = float(tev0.KII)
+            keff0 = float(tev0.keff); theta0 = float(tev0.theta)
 
-            # Step choice (fixed vs adaptive is inside StepController)
-            decision = self.step_controller.choose_step(
-                tip=tip,
-                tev0=tev0,
-                total_length=float(bundle.total_length),
-                build_candidate=build_candidate,
-                evaluator=self.evaluator,
-                toughness=self.toughness,
-                direction_law=self.direction_law,
-                base_network=net_work,
-                reports=reports,
-            )
-
-            if not decision.accepted:
-                reports.append(
-                    TipPropagationReport(
-                        pid=int(tip.tip_id.pid),
-                        which=str(tip.tip_id.which),
-                        grew=False,
-                        reason=str(decision.reason or "rejected"),
-                        KI=float(tev0.KI),
-                        KII=float(tev0.KII),
-                        keff=float(tev0.keff),
-                        theta=float(tev0.theta),
-                        delta_a=float(getattr(decision, "delta_a", 0.0) or 0.0),
-                    )
-                )
-                continue
-
-            # Apply chosen growth
-            net_work = build_candidate(net_work, tip, float(decision.theta), float(decision.delta_a))
-            reports.append(
-                TipPropagationReport(
-                    pid=int(tip.tip_id.pid),
-                    which=str(tip.tip_id.which),
-                    grew=True,
-                    reason="grew",
-                    KI=float(getattr(decision, "KI", tev0.KI)),
-                    KII=float(getattr(decision, "KII", tev0.KII)),
-                    keff=float(getattr(decision, "keff", tev0.keff)),
-                    theta=float(decision.theta),
-                    delta_a=float(decision.delta_a),
-                )
-            )
-
-        # Optional remesh after accepted growth
-        net_new = net_work
-        if self.remesh_policy is not None and net_new is not network:
+            # toughness at this tip
             try:
-                net_new = self.remesh_policy.remesh_network(net_new, ne_half=int(self.evaluator.solver_kwargs.get("ne_half", 60)), cfg=self.cfg)
+                Kc = float(self.toughness.Kc(float(tip.x_tip[0]), float(tip.x_tip[1])))
             except Exception:
-                # remesh is optional; never break propagation
-                net_new = net_work
+                Kc = 0.0
 
-        return PropagationResult(network_old=network, network_new=net_new, reports=reports)
+            if keff0 <= Kc:
+                reports.append(TipPropagationReport(vid, which, False, 0.0, theta0, keff0, KI0, KII0, "below_toughness"))
+                continue
 
-    # -------------------------
-    # Solve + bundle helpers
-    # -------------------------
-    def _solve_bundle_with_escalation(self, network: "CrackNetworkV4", escalations: int) -> _SolveBundle:
-        # Polylines and length via backend
-        polylines = self.netops.extract_open_polylines(network)
-        total_length = 0.0
-        for pl in polylines:
-            for a, b in zip(pl.vids[:-1], pl.vids[1:]):
-                p0 = network.vertex_coords(int(a))
-                p1 = network.vertex_coords(int(b))
-                total_length += float(np.hypot(*(p1 - p0)))
+            # Choose delta_a and theta
+            theta = theta0
+            delta_a = 0.0
 
-        # Solve once using evaluator
-        res, sol = self.evaluator.solve_results(network)
-        return _SolveBundle(res=res, sol=sol, total_length=float(total_length), polylines=polylines)
+            if step_mode == "adaptive_step" and self.step_controller is not None:
+                try:
+                    decision = self.step_controller.choose_step(
+                        evaluator=self.evaluator,
+                        base_network=network,
+                        base_sol=base_sol,
+                        tip=tip,
+                        theta0=theta0,
+                        keff0=keff0,
+                        build_candidate=build_candidate,
+                        total_length=Ltot,
+                    )
+                    delta_a = float(getattr(decision, "delta_a", 0.0))
+                    theta = float(getattr(decision, "theta", theta0))
+                    if not bool(getattr(decision, "accepted", True)):
+                        # If adaptive failed to accept, fall back to fixed (safe)
+                        step_mode = "fixed_step"
+                        reports.append(TipPropagationReport(vid, which, False, 0.0, theta0, keff0, KI0, KII0, f"adaptive_not_accepted:{getattr(decision,'reason','')}"))
+                except Exception as e:
+                    # fall back to fixed
+                    step_mode = "fixed_step"
+                    reports.append(TipPropagationReport(vid, which, False, 0.0, theta0, keff0, KI0, KII0, f"adaptive_failed:{e}"))
 
-    def _safe_eval_tip(self, bundle: _SolveBundle, tip: "TipState", reports: List[TipPropagationReport]):
-        try:
-            tev0 = self.evaluator.eval_tip(bundle.res, tip)
-            return tev0
-        except Exception as e:
-            reports.append(
-                TipPropagationReport(
-                    pid=int(tip.tip_id.pid),
-                    which=str(tip.tip_id.which),
-                    grew=False,
-                    reason=f"eval_failed: {e}",
-                    KI=np.nan,
-                    KII=np.nan,
-                    keff=np.nan,
-                    theta=np.nan,
-                    delta_a=0.0,
-                )
-            )
-            return None
+            if step_mode == "fixed_step":
+                f = float(getattr(self.cfg, "f_fixed", getattr(self.cfg, "f0", 0.10)))
+                delta_a = float(f * Ltot)
+
+            # minimum delta_a
+            delta_a_min = float(getattr(self.cfg, "delta_a_min", 0.0))
+            if delta_a < delta_a_min:
+                delta_a = delta_a_min
+
+            if delta_a <= 0.0:
+                reports.append(TipPropagationReport(vid, which, False, 0.0, theta, keff0, KI0, KII0, "zero_step"))
+                continue
+
+            try:
+                net_new = updater.extend_tip(net_new, tip, theta=theta, delta_a=delta_a)
+                reports.append(TipPropagationReport(vid, which, True, delta_a, theta, keff0, KI0, KII0, ""))
+            except Exception as e:
+                reports.append(TipPropagationReport(vid, which, False, 0.0, theta, keff0, KI0, KII0, f"extend_failed:{e}"))
+
+        # Optional remesh
+        if self.remesh_policy is not None:
+            try:
+                net_new = self.remesh_policy.remesh_network(net_new, solver_kwargs=getattr(self.evaluator, "solver_kwargs", None))
+            except Exception:
+                try:
+                    net_new = self.remesh_policy.remesh_network(net_new)
+                except Exception:
+                    pass
+
+        return PropagationResult(network_new=net_new, reports=reports)

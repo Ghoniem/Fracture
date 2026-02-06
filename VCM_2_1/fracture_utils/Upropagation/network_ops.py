@@ -1,220 +1,173 @@
+# fracture_utils/Upropagation/network_ops.py
+# Clean, import-safe network operations using Usolver.polyline
 
-"""
-Upropagation.network_ops
-
-Goal: centralize all CrackNetworkV4 topology operations (degree map, polyline extraction,
-tip identification) behind a single interface.
-
-Design:
-- Prefer using fracture_utils.Ugenerator (user's network generator package) if present.
-- Fall back to a small internal implementation for the common case of a single open polyline crack.
-
-This avoids re-implementing network logic across Upropagation modules and prevents API drift
-(e.g., differing extract_tips_from_polylines signatures).
-"""
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence, Tuple
-import importlib
-
+from typing import Any, Dict, List, Sequence
 import numpy as np
 
 
+# -----------------------------------------------------------------------------
+# Simple container
+# -----------------------------------------------------------------------------
+
 @dataclass
 class PolylinePath:
-    """A polyline path represented as an ordered list of vertex ids."""
     vids: List[int]
 
 
-class NetworkOpsBackend:
-    """Abstract backend for network topology operations."""
+# -----------------------------------------------------------------------------
+# Public factory
+# -----------------------------------------------------------------------------
+
+def get_netops():
+    try:
+        return _UsolverPolylineNetOps()
+    except Exception:
+        return _FallbackNetOps()
+
+
+# -----------------------------------------------------------------------------
+# Usolver-backed implementation
+# -----------------------------------------------------------------------------
+
+class _UsolverPolylineNetOps:
+    def __init__(self):
+        from fracture_utils.Usolver import polyline
+        self.pl = polyline
+
+    # ---------------------------------
+    # Degrees
+    # ---------------------------------
     def degree_map(self, network) -> Dict[int, int]:
-        raise NotImplementedError
+        if hasattr(self.pl, "vertex_degrees"):
+            return {int(k): int(v) for k, v in self.pl.vertex_degrees(network).items()}
+        return {int(v.id): len(v.edges) for v in network.vertices}
 
+    # ---------------------------------
+    # Open polylines
+    # ---------------------------------
     def extract_open_polylines(self, network) -> List[PolylinePath]:
-        raise NotImplementedError
+        comps = self.pl.find_polyline_components(network)
+        out: List[PolylinePath] = []
 
-    def extract_deg1_tips(self, network, polylines: List[PolylinePath], deg: Dict[int, int]):
-        """Return list of TipState objects compatible with Upropagation.tip_state."""
-        raise NotImplementedError
+        for comp in comps:
+            # normalize component → edge ids
+            if isinstance(comp, dict):
+                edges = comp.get("edges")
+            elif isinstance(comp, (tuple, list)):
+                edges = comp[0]
+            else:
+                edges = comp
 
-
-class InternalNetworkOps(NetworkOpsBackend):
-    """
-    Minimal internal backend.
-
-    Supports:
-    - networks consisting of one or more disjoint open chains made of line edges
-      with no junctions (deg<=2).
-    """
-    def degree_map(self, network) -> Dict[int, int]:
-        deg: Dict[int, int] = {}
-        for v in network.vertices:
-            deg[int(v.id)] = len(getattr(v, "edges", []) or [])
-        return deg
-
-    def extract_open_polylines(self, network) -> List[PolylinePath]:
-        # Build adjacency (vertex -> neighbor vertices) for line edges
-        adj: Dict[int, List[int]] = {}
-        for e in network.edges:
-            v0 = int(e.v0); v1 = int(e.v1)
-            adj.setdefault(v0, []).append(v1)
-            adj.setdefault(v1, []).append(v0)
-
-        deg = self.degree_map(network)
-
-        # Find endpoints (deg==1) and walk chains
-        endpoints = [vid for vid, d in deg.items() if d == 1]
-        visited_edges = set()
-        paths: List[PolylinePath] = []
-
-        # Helper to mark an undirected edge
-        def edge_key(a: int, b: int) -> Tuple[int, int]:
-            return (a, b) if a < b else (b, a)
-
-        for start in endpoints:
-            # If start already in a built path, skip
-            # We'll check by seeing whether its incident edge has been visited
-            nbrs = adj.get(start, [])
-            if not nbrs:
-                continue
-            if edge_key(start, nbrs[0]) in visited_edges:
+            if edges is None:
                 continue
 
-            vids = [start]
-            prev = None
-            cur = start
-            while True:
-                nbrs = adj.get(cur, [])
-                # choose next not equal prev
-                nxt = None
-                for nb in nbrs:
-                    if prev is None or nb != prev:
-                        # avoid traversing an already visited edge unless no choice
-                        if prev is None or edge_key(cur, nb) not in visited_edges:
-                            nxt = nb
-                            break
-                if nxt is None:
-                    break
-                visited_edges.add(edge_key(cur, nxt))
-                vids.append(int(nxt))
-                prev, cur = cur, int(nxt)
-                if deg.get(cur, 0) == 1:
-                    break
-            if len(vids) >= 2:
-                paths.append(PolylinePath(vids=vids))
-        return paths
-
-    def extract_deg1_tips(self, network, polylines: List[PolylinePath], deg: Dict[int, int]):
-        from .tip_state import TipID, TipState  # local import
-
-        tips: List[TipState] = []
-        for pid, pl in enumerate(polylines):
-            if len(pl.vids) < 2:
+            vids, _ = self.pl.path_order_for_component(network, edges)
+            if vids is None or len(vids) < 2:
                 continue
-            v_start = int(pl.vids[0])
-            v_end   = int(pl.vids[-1])
 
-            # Start tip
-            if deg.get(v_start, 0) == 1:
-                x_tip = network.vertex_coords(v_start)
-                x_nbr = network.vertex_coords(int(pl.vids[1]))
-                t_out = np.asarray(x_tip - x_nbr, float)
-                n = float(np.hypot(t_out[0], t_out[1]))
-                t_out = t_out / (n if n > 0 else 1.0)
+            out.append(PolylinePath(list(map(int, vids))))
+
+        return out
+
+    # ---------------------------------
+    # Degree-1 tips
+    # ---------------------------------
+    def extract_deg1_tips(
+        self,
+        network,
+        polylines: Sequence[PolylinePath],
+        deg: Dict[int, int],
+    ):
+        from .tip_state import TipState, TipID
+
+        def xy(vid):
+            return np.asarray(network.vertex_coords(int(vid)), float)
+
+        tips = []
+
+        for pid, p in enumerate(polylines):
+            vids = p.vids
+            if len(vids) < 2:
+                continue
+
+            # total polyline length
+            L = sum(
+                np.linalg.norm(xy(a) - xy(b))
+                for a, b in zip(vids[:-1], vids[1:])
+            )
+
+            # start and end
+            for which, v_tip, v_in in (
+                ("start", vids[0], vids[1]),
+                ("end", vids[-1], vids[-2]),
+            ):
+                if deg.get(int(v_tip), 0) != 1:
+                    continue
+
+                t = xy(v_tip) - xy(v_in)
+                n = np.linalg.norm(t)
+                if n == 0.0:
+                    continue
+
                 tips.append(
                     TipState(
-                        tip_id=TipID(pid=pid, which="start"),
-                        vid=int(v_start),
-                        x_tip=np.asarray(x_tip, float),
-                        t_hat=np.asarray(t_out, float),
+                        tip_id=TipID(pid=pid, which=which),
+                        v_tip=int(v_tip),
+                        x_tip=xy(v_tip),
+                        t_hat=t / n,
+                        total_length=float(L),
                     )
                 )
-            # End tip
-            if deg.get(v_end, 0) == 1:
-                x_tip = network.vertex_coords(v_end)
-                x_nbr = network.vertex_coords(int(pl.vids[-2]))
-                t_out = np.asarray(x_tip - x_nbr, float)
-                n = float(np.hypot(t_out[0], t_out[1]))
-                t_out = t_out / (n if n > 0 else 1.0)
-                tips.append(
-                    TipState(
-                        tip_id=TipID(pid=pid, which="end"),
-                        vid=int(v_end),
-                        x_tip=np.asarray(x_tip, float),
-                        t_hat=np.asarray(t_out, float),
-                    )
-                )
+
         return tips
 
 
-class UgeneratorNetworkOps(NetworkOpsBackend):
-    """
-    Adapter around the user's Ugenerator package.
+# -----------------------------------------------------------------------------
+# Conservative fallback (single straight crack safe)
+# -----------------------------------------------------------------------------
 
-    Since Ugenerator module layout may vary, we try a small list of likely module paths.
-    You can extend 'CANDIDATE_MODULES' if needed.
-    """
-    CANDIDATE_MODULES = [
-        "fracture_utils.Ugenerator.topology",
-        "fracture_utils.Ugenerator.network_ops",
-        "Ugenerator.topology",
-        "Ugenerator.network_ops",
-    ]
+class _FallbackNetOps:
+    def degree_map(self, network):
+        return {int(v.id): len(v.edges) for v in network.vertices}
 
-    def __init__(self):
-        self.mod = None
-        last_err = None
-        for m in self.CANDIDATE_MODULES:
-            try:
-                self.mod = importlib.import_module(m)
-                break
-            except Exception as e:
-                last_err = e
-        if self.mod is None:
-            raise ImportError(f"Could not import Ugenerator topology backend. Last error: {last_err}")
+    def extract_open_polylines(self, network):
+        vids = [int(v.id) for v in network.vertices]
+        return [PolylinePath(vids)] if len(vids) >= 2 else []
 
-    def degree_map(self, network) -> Dict[int, int]:
-        if hasattr(self.mod, "degree_map"):
-            return {int(k): int(v) for k, v in self.mod.degree_map(network).items()}
-        # Fallback: infer from network
-        deg: Dict[int, int] = {}
-        for v in network.vertices:
-            deg[int(v.id)] = len(getattr(v, "edges", []) or [])
-        return deg
+    def extract_deg1_tips(self, network, polylines, deg):
+        from .tip_state import TipState, TipID
 
-    def extract_open_polylines(self, network) -> List[PolylinePath]:
-        # Prefer a function that returns vertex-id sequences
-        if hasattr(self.mod, "extract_open_polylines"):
-            pls = self.mod.extract_open_polylines(network)
-            out: List[PolylinePath] = []
-            for pl in pls:
-                vids = list(getattr(pl, "vids", pl))
-                out.append(PolylinePath(vids=[int(x) for x in vids]))
-            return out
-        if hasattr(self.mod, "polylines_from_network"):
-            pls = self.mod.polylines_from_network(network)
-            out: List[PolylinePath] = []
-            for pl in pls:
-                vids = list(getattr(pl, "vids", pl))
-                out.append(PolylinePath(vids=[int(x) for x in vids]))
-            return out
-        # Last resort: use internal approach
-        return InternalNetworkOps().extract_open_polylines(network)
+        def xy(vid):
+            return np.asarray(network.vertex_coords(int(vid)), float)
 
-    def extract_deg1_tips(self, network, polylines: List[PolylinePath], deg: Dict[int, int]):
-        # Prefer a direct tip extractor that returns TipState or equivalent
-        if hasattr(self.mod, "extract_deg1_tips"):
-            return self.mod.extract_deg1_tips(network, polylines, deg)
-        # Otherwise, reuse internal TipState builder (outward tangent)
-        return InternalNetworkOps().extract_deg1_tips(network, polylines, deg)
+        tips = []
+        for p in polylines:
+            vids = p.vids
+            if len(vids) < 2:
+                continue
 
+            L = np.linalg.norm(xy(vids[0]) - xy(vids[-1]))
 
-def get_network_ops(prefer_ugenerator: bool = True) -> NetworkOpsBackend:
-    if prefer_ugenerator:
-        try:
-            return UgeneratorNetworkOps()
-        except Exception:
-            return InternalNetworkOps()
-    return InternalNetworkOps()
+            for which, v_tip, v_in in (
+                ("start", vids[0], vids[1]),
+                ("end", vids[-1], vids[-2]),
+            ):
+                if deg.get(v_tip, 0) != 1:
+                    continue
+                t = xy(v_tip) - xy(v_in)
+                n = np.linalg.norm(t)
+                if n == 0:
+                    continue
+                tips.append(
+                    TipState(
+                        tip_id=TipID(pid=0, which=which),
+                        v_tip=v_tip,
+                        x_tip=xy(v_tip),
+                        t_hat=t / n,
+                        total_length=float(L),
+                    )
+                )
+        return tips
