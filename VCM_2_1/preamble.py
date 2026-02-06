@@ -225,8 +225,53 @@ plot_deformed_network = plotter_def
 plot_PK = plotter_pk
 
 
+
 # -----------------------------
-# Validation (COD + SIF)
+# Propagation (crack growth)
+# -----------------------------
+prop_cfg_mod = _try_import("fracture_utils.Upropagation.config")
+prop_tough_mod = _try_import("fracture_utils.Upropagation.toughness")
+prop_dir_mod = _try_import("fracture_utils.Upropagation.direction")
+prop_eval_mod = _try_import("fracture_utils.Upropagation.evaluate")
+prop_prog_mod = _try_import("fracture_utils.Upropagation.propagator")
+
+PropagationConfig = _get_attr(
+    prop_cfg_mod,
+    "PropagationConfig",
+    _missing_class("PropagationConfig", "Expected in fracture_utils.Upropagation.config."),
+)
+
+ConstantToughness = _get_attr(
+    prop_tough_mod,
+    "ConstantToughness",
+    _missing_class("ConstantToughness", "Expected in fracture_utils.Upropagation.toughness."),
+)
+CallableToughness = _get_attr(
+    prop_tough_mod,
+    "CallableToughness",
+    _missing_class("CallableToughness", "Expected in fracture_utils.Upropagation.toughness."),
+)
+
+MaximumHoopStressLaw = _get_attr(
+    prop_dir_mod,
+    "MaximumHoopStressLaw",
+    _missing_class("MaximumHoopStressLaw", "Expected in fracture_utils.Upropagation.direction."),
+)
+
+CandidateEvaluator = _get_attr(
+    prop_eval_mod,
+    "CandidateEvaluator",
+    _missing_class("CandidateEvaluator", "Expected in fracture_utils.Upropagation.evaluate."),
+)
+
+CrackPropagator = _get_attr(
+    prop_prog_mod,
+    "CrackPropagator",
+    _missing_class("CrackPropagator", "Expected in fracture_utils.Upropagation.propagator."),
+)
+
+# -----------------------------
+# Validation \(COD \+ SIF\)
 # -----------------------------
 val_cod_mod = _try_import("fracture_utils.Uvalidation.validation_cod")
 val_sif_mod = _try_import("fracture_utils.Uvalidation.validation_sif")
@@ -261,7 +306,13 @@ __all__ = [
     "Uprocessor",
     "Ugenerator",
     "Ubem",
-    "Uvalidation",
+    # propagation
+    "PropagationConfig",
+    "ConstantToughness",
+    "CallableToughness",
+    "MaximumHoopStressLaw",
+    "CandidateEvaluator",
+    "CrackPropagator",
     # generator
     "CrackNetworkGenerator",
     "GeometryUtils",
