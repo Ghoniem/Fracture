@@ -27,6 +27,82 @@ class PolylinePath:
     eids: List[int]
 
 
+@dataclass(frozen=True)
+class PolylineMetrics:
+    """Lightweight geometric/topological metrics for a PolylinePath."""
+    pid: int
+    length: float
+    n_vertices: int
+    v_start: int
+    v_end: int
+    deg_start: int
+    deg_end: int
+
+    @property
+    def is_tip_to_tip(self) -> bool:
+        return (self.deg_start == 1) and (self.deg_end == 1)
+
+    @property
+    def is_tip_to_junction(self) -> bool:
+        return (self.deg_start == 1 and self.deg_end >= 3) or (self.deg_end == 1 and self.deg_start >= 3)
+
+    @property
+    def is_junction_to_junction(self) -> bool:
+        return (self.deg_start >= 3) and (self.deg_end >= 3)
+
+
+def polyline_metrics(
+    network: Any,
+    polylines: Sequence[PolylinePath] | None = None,
+    deg: Dict[int, int] | None = None,
+) -> List[PolylineMetrics]:
+    """Compute per-polyline metrics used by propagation policies.
+
+    Notes
+    -----
+    * A "polyline" here is a maximal chain of deg-2 vertices between two special vertices (deg != 2),
+      as returned by :func:`extract_open_polylines`.
+    * The returned `length` is the *arc length* along the polyline geometry (sum of segment lengths),
+      not a chord length.
+    """
+    if deg is None:
+        deg = degree_map(network)
+    if polylines is None:
+        polylines = extract_open_polylines(network)
+
+    out: List[PolylineMetrics] = []
+    for pl in polylines:
+        vids = pl.vids or []
+        if len(vids) < 2:
+            continue
+        v0 = int(vids[0])
+        v1 = int(vids[-1])
+        L = _polyline_length(network, vids)
+        out.append(
+            PolylineMetrics(
+                pid=int(pl.pid),
+                length=float(L),
+                n_vertices=int(len(vids)),
+                v_start=v0,
+                v_end=v1,
+                deg_start=int(deg.get(v0, 0)),
+                deg_end=int(deg.get(v1, 0)),
+            )
+        )
+    return out
+
+
+def longest_polyline(metrics: Sequence[PolylineMetrics]) -> PolylineMetrics | None:
+    """Return the polyline with maximum arc length (or None if empty)."""
+    if not metrics:
+        return None
+    return max(metrics, key=lambda m: float(m.length))
+
+
+def polyline_id_to_metrics(metrics: Sequence[PolylineMetrics]) -> Dict[int, PolylineMetrics]:
+    """Convenience map pid -> metrics."""
+    return {int(m.pid): m for m in metrics}
+
 def _iter_edges(network: Any):
     for e in getattr(network, "edges", []):
         eid = int(getattr(e, "id"))
@@ -197,6 +273,16 @@ class _NetOps:
 
     def extract_deg1_tips(self, network: Any, polylines: Sequence[PolylinePath], deg: Dict[int, int]):
         return extract_deg1_tips(network, polylines, deg)
+
+    def polyline_metrics(self, network: Any, polylines: Sequence[PolylinePath] | None = None, deg: Dict[int, int] | None = None):
+        return polyline_metrics(network, polylines=polylines, deg=deg)
+
+    def longest_polyline(self, metrics: Sequence[PolylineMetrics]):
+        return longest_polyline(metrics)
+
+    def polyline_id_to_metrics(self, metrics: Sequence[PolylineMetrics]) -> Dict[int, PolylineMetrics]:
+        return polyline_id_to_metrics(metrics)
+
 
 
 _NETOPS = _NetOps()
