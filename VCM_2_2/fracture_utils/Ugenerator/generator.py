@@ -983,7 +983,7 @@ class CrackNetworkGenerator:
         
         d1 = p2 - p1
         d2 = p4 - p3
-        d3 = p1 - p3
+        d3 = p3 - p1
         
         # Cross product for 2D
         cross_d1_d2 = d1[0] * d2[1] - d1[1] * d2[0]
