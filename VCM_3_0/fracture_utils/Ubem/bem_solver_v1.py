@@ -1,466 +1,420 @@
-
 """
-Clean 2D BEM solver (constant elements, midpoint collocation) with constant-strain enrichment
-=========================================================================================
+bem_solver_v1_from_pdf.py
 
-Why this version exists
-----------------------
-Your results show:
+2D elastostatic BEM (constant elements, collocation) built from the
+self-consistent equations in your PDF (Eq. 4.16–4.21, 4.18).
 
-- Benchmark A (rigid translation) PASS  -> boundary operator/closure is OK.
-- Benchmark B (uniform pressure) FAIL   -> the discrete constant-element displacement BIE
-  (as implemented) cannot reproduce a constant hydrostatic stress field accurately unless
-  we include a constant-strain "particular solution" (a standard BEM enrichment / patch test fix).
+BIE (no body forces):
+    c u(P) + ∫Γ p*(P,Q) u(Q) dΓ(Q) = ∫Γ u*(P,Q) t(Q) dΓ(Q)
+where c = 1/2 I for smooth boundary collocation.
 
-This file keeps the stable v8 block-row-sum diagonal closure and adds a **3-parameter
-constant-strain mode** (εxx, εyy, εxy). This mode generates a constant stress field
-and corresponding linear displacement field that satisfies Navier's equation in the domain.
+Kernels implemented exactly in the PDF style:
+  u*_{ik}  (Kelvin displacement)  Eq (4.18) first line
+  p*_{ik}  (Kelvin traction)      Eq (4.18) second line
 
-We solve for boundary unknowns AND (optionally) the 3 strain parameters by augmenting
-the boundary system with their contributions.
+Index convention used here (standard):
+  U[i,k] = displacement component i due to unit point-force in direction k
+  T[i,k] = traction component i (at boundary point, along outward normal) due to unit point-force k
 
-Key benefit:
-- Uniform pressure in a circular domain becomes representable (constant hydrostatic stress).
-- This does not break rigid translation.
+Stress is computed (for now) from numerical displacement gradients:
+  ε = sym(∇u), σ = λ tr(ε) I + 2μ ε
 
-Drop-in replacement:
-- Save as fracture_utils/Ubem/bem_solver.py
-- API matches your harness: solve(gauss_n=8), add_element(...)
-
-Notes on the "uniform pressure" benchmark:
-- Pure Neumann problems have rigid displacement nullspace; we add 3 weak constraints on u
-  (mean ux, mean uy, mean rotation). These constraints do not affect stresses.
-
+Plane strain vs plane stress:
+  - κ changes in the displacement kernel u* (via kappa_from_nu)
+  - constitutive in-plane σxx,σyy,σxy uses standard (λ,μ) choices for each case.
 """
 
 from __future__ import annotations
-import numpy as np
+
 from dataclasses import dataclass
+import math
+import numpy as np
 from typing import List, Tuple, Optional
 
-VERSION = "bem_solver_clean_final_enrichment_signfix"
 
-def solver_info():
-    import os
-    return {"version": VERSION, "file": __file__, "cwd": os.getcwd()}
+# -----------------------------
+# Material helpers
+# -----------------------------
+def kappa_from_nu(nu: float, plane_strain: bool) -> float:
+    # plane strain: κ = 3 - 4ν
+    # plane stress: κ = (3 - ν)/(1 + ν)
+    return (3.0 - 4.0 * nu) if plane_strain else ((3.0 - nu) / (1.0 + nu))
 
 
+def shear_modulus(E: float, nu: float) -> float:
+    return E / (2.0 * (1.0 + nu))
+
+
+def lame_lambda(E: float, nu: float, plane_strain: bool) -> float:
+    if plane_strain:
+        # 3D λ used in plane strain constitutive for in-plane stresses
+        return E * nu / ((1.0 + nu) * (1.0 - 2.0 * nu))
+    # plane stress “effective” λ for in-plane σ = λ tr(ε) I + 2μ ε
+    return E * nu / (1.0 - nu * nu)
+
+
+# -----------------------------
+# Geometry
+# -----------------------------
 @dataclass
 class Segment:
-    x1: float; y1: float
-    x2: float; y2: float
-    xm: float; ym: float
-    nx: float; ny: float
-    L: float
+    x1: float
+    y1: float
+    x2: float
+    y2: float
+    is_traction: bool   # True => traction prescribed (u unknown); False => displacement prescribed (t unknown)
+    bc_x: float
+    bc_y: float
+
+    @property
+    def dx(self) -> float:
+        return self.x2 - self.x1
+
+    @property
+    def dy(self) -> float:
+        return self.y2 - self.y1
+
+    @property
+    def length(self) -> float:
+        return float(math.hypot(self.dx, self.dy))
+
+    @property
+    def xm(self) -> float:
+        return 0.5 * (self.x1 + self.x2)
+
+    @property
+    def ym(self) -> float:
+        return 0.5 * (self.y1 + self.y2)
+
+    @property
+    def tx(self) -> float:
+        L = self.length
+        return self.dx / L
+
+    @property
+    def ty(self) -> float:
+        L = self.length
+        return self.dy / L
+
+    @property
+    def nx(self) -> float:
+        # For a CCW discretized closed boundary, this is outward.
+        return self.ty
+
+    @property
+    def ny(self) -> float:
+        return -self.tx
 
 
-def _gauss_legendre(n: int):
-    return np.polynomial.legendre.leggauss(int(n))
+def gauss_legendre(n: int) -> Tuple[np.ndarray, np.ndarray]:
+    x, w = np.polynomial.legendre.leggauss(n)
+    return x.astype(float), w.astype(float)
 
 
-def _material(E: float, nu: float, plane_strain: bool):
-    mu = E / (2.0 * (1.0 + nu))
-    if plane_strain:
-        lam = E * nu / ((1.0 + nu) * (1.0 - 2.0 * nu))
-        kappa = 3.0 - 4.0 * nu
-    else:
-        lam = 2.0 * mu * nu / (1.0 - nu)
-        kappa = (3.0 - nu) / (1.0 + nu)
-    return lam, mu, kappa
+def map_to_segment(seg: Segment, s: float) -> Tuple[float, float, float]:
+    """
+    s ∈ [-1,1] -> (x(s), y(s), jac), where jac = |d(x,y)/ds| = L/2
+    """
+    x = 0.5 * (1.0 - s) * seg.x1 + 0.5 * (1.0 + s) * seg.x2
+    y = 0.5 * (1.0 - s) * seg.y1 + 0.5 * (1.0 + s) * seg.y2
+    jac = 0.5 * seg.length
+    return x, y, jac
 
 
+# -----------------------------
+# Kelvin kernels from PDF Eq (4.18)
+# -----------------------------
 def kelvin_U(field: Tuple[float, float],
              source: Tuple[float, float],
-             *,
-             E: float,
-             nu: float,
-             plane_strain: bool,
-             r0: float) -> np.ndarray:
+             E: float, nu: float, plane_strain: bool,
+             r_floor: float = 1e-16) -> np.ndarray:
+    """
+    u*_{ik} displacement component i due to unit point-force in direction k at source.
+
+    PDF-style (Eq 4.18 first line):
+      u*_{ik} = 1/(8πG(1-ν)) [ κ ln(1/r) δ_{ik} + (∂r/∂x_i)(∂r/∂x_k) ]
+
+    where κ = 3-4ν (plane strain) or (3-ν)/(1+ν) (plane stress),
+    and (∂r/∂x_i) = r_i / r, so the last term is r_i r_k / r^2.
+    """
     x, y = field
     xs, ys = source
-    dx = x - xs
-    dy = y - ys
-    r2 = dx*dx + dy*dy + 1e-30
-    r = np.sqrt(r2)
-
-    _, mu, kappa = _material(E, nu, plane_strain)
-    coef = 1.0 / (8.0 * np.pi * mu)
-    logr = np.log(r / max(r0, 1e-30))
-
-    U = np.zeros((2, 2), dtype=float)
-    U[0, 0] = coef * ((kappa - 1.0) * logr + dx*dx / r2)
-    U[1, 1] = coef * ((kappa - 1.0) * logr + dy*dy / r2)
-    U[0, 1] = coef * (dx*dy / r2)
-    U[1, 0] = U[0, 1]
-    return U
-
-
-
-def kelvin_T(
-    field: tuple[float, float],
-    source: tuple[float, float],
-    n_source: tuple[float, float],
-    *,
-    E: float,
-    nu: float,
-    plane_strain: bool = True,
-    r0: float = 0.0,
-) -> np.ndarray:
-    """
-    Kelvin traction fundamental solution in 2D elasticity.
-
-    Returns T (2x2) such that for a point force f at 'field' the traction at
-    boundary point 'source' with outward normal n_source is:
-        t = T @ f
-
-    Conventions:
-      - r = source - field
-      - U uses the standard 2D Kelvin displacement kernel
-      - traction is t_i = sigma_{ij} n_j computed from strains derived from U.
-    """
-    xs, ys = source
-    xf, yf = field
-    rx = xs - xf
-    ry = ys - yf
+    rx = x - xs
+    ry = y - ys
     r2 = rx * rx + ry * ry
-    if r0 and r2 < r0 * r0:
-        r2 = r0 * r0
+    if r2 < r_floor * r_floor:
+        r2 = r_floor * r_floor
     r = math.sqrt(r2)
+
+    G = shear_modulus(E, nu)
+    coeff = 1.0 / (8.0 * math.pi * G * (1.0 - nu))
+    kappa = kappa_from_nu(nu, plane_strain)
+
+    ln1r = -math.log(r)  # ln(1/r)
+
     inv_r2 = 1.0 / r2
-    inv_r4 = inv_r2 * inv_r2
+    rr = np.array([[rx * rx, rx * ry],
+                   [ry * rx, ry * ry]], dtype=float) * inv_r2
 
-    mu = E / (2.0 * (1.0 + nu))
-    if plane_strain:
-        lam = E * nu / ((1.0 + nu) * (1.0 - 2.0 * nu))
-    else:
-        lam = E * nu / (1.0 - nu * nu)
+    return coeff * (kappa * ln1r * np.eye(2) + rr)
 
+
+def kelvin_T(field: Tuple[float, float],
+             source: Tuple[float, float],
+             n_source: Tuple[float, float],
+             E: float, nu: float, plane_strain: bool,
+             r_floor: float = 1e-16) -> np.ndarray:
+    """
+    p*_{ik} traction component i at the boundary point "source" (with outward normal n_source),
+    due to unit point-force in direction k applied at "field".
+
+    PDF-style (Eq 4.18 second line):
+      p*_{ik} = - 1/(4π(1-ν) r) * [
+                ∂r/∂n { (1-2ν) δ_{ik} + 2 (∂r/∂x_k)(∂r/∂x_i) }
+                - (1-2ν)( (∂r/∂x_i) n_k - (∂r/∂x_k) n_i )
+              ]
+
+    IMPORTANT: derivatives are w.r.t the traction point coordinates (the boundary integration point),
+    so we use r = x(source) - x(field) for ∂r/∂x.
+    """
+    xi, yi = field
+    x, y = source
     nx, ny = n_source
 
-    # dU_{ik} / dx_j at point x = source, with respect to x (source) coordinates.
-    # U_{ik} = A [ (kappa-1) ln r δ_ik + r_i r_k / r^2 ], with A = 1/(8πμ)
-    kappa = (3.0 - 4.0 * nu) if plane_strain else (3.0 - nu) / (1.0 + nu)
-    A = 1.0 / (8.0 * math.pi * mu)
+    rx = x - xi
+    ry = y - yi
+    r2 = rx * rx + ry * ry
+    if r2 < r_floor * r_floor:
+        r2 = r_floor * r_floor
+    r = math.sqrt(r2)
+    inv_r = 1.0 / r
 
-    # helper: derivative tensor dU[i,k,j]
-    dU = np.zeros((2, 2, 2), dtype=float)
-    rvec = np.array([rx, ry], dtype=float)
-    # term1: (kappa-1) (r_j/r^2) δ_ik
-    for i in range(2):
-        for k in range(2):
-            for j in range(2):
-                dU[i, k, j] += A * (kappa - 1.0) * (rvec[j] * inv_r2) * (1.0 if i == k else 0.0)
+    drdx = rx * inv_r
+    drdy = ry * inv_r
+    drdn = drdx * nx + drdy * ny  # ∂r/∂n
 
-    # term2: derivative of r_i r_k / r^2
-    # ∂/∂x_j (r_i r_k / r^2) = (δ_{ij} r_k + r_i δ_{kj})/r^2 - 2 r_i r_k r_j / r^4
-    for i in range(2):
-        for k in range(2):
-            for j in range(2):
-                term = 0.0
-                term += ( (1.0 if i == j else 0.0) * rvec[k] + rvec[i] * (1.0 if k == j else 0.0) ) * inv_r2
-                term -= 2.0 * rvec[i] * rvec[k] * rvec[j] * inv_r4
-                dU[i, k, j] += A * term
+    one_m_2nu = 1.0 - 2.0 * nu
 
-    # Build traction matrix T_{p k} = sigma_{p q}^{(k)} n_q,
-    # where sigma^{(k)} is stress due to unit force in direction k.
-    T = np.zeros((2, 2), dtype=float)
+    grad = np.array([drdx, drdy], dtype=float)
+    outer = np.outer(grad, grad)  # (i,k)
 
-    # For each unit force direction k:
-    for k in range(2):
-        # strain eps_pq = 0.5(du_p/dx_q + du_q/dx_p) with u_p = U_{p k}
-        eps = np.zeros((2, 2), dtype=float)
-        for p in range(2):
-            for q in range(2):
-                eps[p, q] = 0.5 * (dU[p, k, q] + dU[q, k, p])
+    A = one_m_2nu * np.eye(2) + 2.0 * outer
 
-        tr_eps = float(eps[0, 0] + eps[1, 1])
-        # stress
-        sigma = 2.0 * mu * eps + lam * tr_eps * np.eye(2)
+    nvec = np.array([nx, ny], dtype=float)
+    B = np.outer(grad, nvec) - np.outer(nvec, grad)  # (i,k)
 
-        # traction
-        t = sigma @ np.array([nx, ny], dtype=float)
-        T[:, k] = t
-
-    return T
-
-def _u_from_strain(x: float, y: float, eps: np.ndarray) -> np.ndarray:
-    """
-    Linear displacement field with zero rigid translation:
-      u_x = eps_xx x + eps_xy y
-      u_y = eps_xy x + eps_yy y
-    eps = [eps_xx, eps_yy, eps_xy]
-    """
-    exx, eyy, exy = float(eps[0]), float(eps[1]), float(eps[2])
-    return np.array([exx * x + exy * y,
-                     exy * x + eyy * y], dtype=float)
+    pref = -1.0 / (4.0 * math.pi * (1.0 - nu) * r)
+    return pref * (drdn * A - one_m_2nu * B)
 
 
-def _t_from_strain(nx: float, ny: float, eps: np.ndarray, lam: float, mu: float) -> np.ndarray:
-    """
-    Traction t = sigma n from constant strain eps.
-    """
-    exx, eyy, exy = float(eps[0]), float(eps[1]), float(eps[2])
-    tr = exx + eyy
-    sxx = lam * tr + 2.0 * mu * exx
-    syy = lam * tr + 2.0 * mu * eyy
-    sxy = 2.0 * mu * exy
-
-    tx = sxx * nx + sxy * ny
-    ty = sxy * nx + syy * ny
-    return np.array([tx, ty], dtype=float)
-
-
+# -----------------------------
+# Solver
+# -----------------------------
 class BEMSolver2D:
-    def __init__(self, E: float, nu: float, plane_strain: bool = True, enable_strain_mode: bool = True):
+    def __init__(self, E: float, nu: float, plane_strain: bool = True):
         self.E = float(E)
         self.nu = float(nu)
         self.plane_strain = bool(plane_strain)
-        self.enable_strain_mode = bool(enable_strain_mode)
 
-        self.segments: List[Segment] = []
-        self._is_tr: List[bool] = []
-        self._bcx: List[float] = []
-        self._bcy: List[float] = []
+        self.segs: List[Segment] = []
 
         self.u_x: Optional[np.ndarray] = None
         self.u_y: Optional[np.ndarray] = None
         self.t_x: Optional[np.ndarray] = None
         self.t_y: Optional[np.ndarray] = None
+        self._colloc_xy: Optional[np.ndarray] = None
 
-        # solved strain mode (eps_xx, eps_yy, eps_xy)
-        self.eps: Optional[np.ndarray] = None
+    def add_element(self, x1: float, y1: float, x2: float, y2: float,
+                    is_traction: bool, bc_x: float, bc_y: float):
+        self.segs.append(Segment(float(x1), float(y1), float(x2), float(y2),
+                                 bool(is_traction), float(bc_x), float(bc_y)))
 
-        # optional scalar multiplier for H operator (keep 1.0 unless you intentionally calibrate)
-        self.kH: float = 1.0
+    def solve(self, gauss_n: int = 8):
+        if not self.segs:
+            raise ValueError("No boundary elements added.")
 
-    def add_element(self, x1, y1, x2, y2, is_traction: bool, bc_x: float, bc_y: float):
-        x1 = float(x1); y1 = float(y1); x2 = float(x2); y2 = float(y2)
-        xm = 0.5 * (x1 + x2)
-        ym = 0.5 * (y1 + y2)
-        L = float(np.hypot(x2 - x1, y2 - y1))
-        tx = (x2 - x1) / L
-        ty = (y2 - y1) / L
-        nx = ty
-        ny = -tx
+        N = len(self.segs)
+        xg, wg = gauss_legendre(int(gauss_n))
 
-        self.segments.append(Segment(x1, y1, x2, y2, xm, ym, nx, ny, L))
-        self._is_tr.append(bool(is_traction))
-        self._bcx.append(float(bc_x))
-        self._bcy.append(float(bc_y))
+        colloc = np.array([[s.xm, s.ym] for s in self.segs], dtype=float)
+        self._colloc_xy = colloc
 
-    def _assemble_G_and_Hoff(self, gauss_n: int = 8) -> Tuple[np.ndarray, np.ndarray, float]:
-        N = len(self.segments)
-        xg, wg = _gauss_legendre(gauss_n)
-        Lc = float(np.mean([s.L for s in self.segments]))
-        r0 = Lc
+        # Assemble G and H_off (diagonal of H handled by row-sum closure)
+        G = np.zeros((2 * N, 2 * N), dtype=float)
+        H_off = np.zeros((2 * N, 2 * N), dtype=float)
 
-        G = np.zeros((2*N, 2*N), dtype=float)
-        H_off = np.zeros((2*N, 2*N), dtype=float)
-
-        for i, si in enumerate(self.segments):
+        for i, si in enumerate(self.segs):
             xi, yi = si.xm, si.ym
 
-            for j, sj in enumerate(self.segments):
+            for j, sj in enumerate(self.segs):
                 Gij = np.zeros((2, 2), dtype=float)
                 Hij = np.zeros((2, 2), dtype=float)
 
-                for s, w in zip(xg, wg):
-                    xs = 0.5*(1.0 - s)*sj.x1 + 0.5*(1.0 + s)*sj.x2
-                    ys = 0.5*(1.0 - s)*sj.y1 + 0.5*(1.0 + s)*sj.y2
-                    jac = 0.5 * sj.L
+                rf = 1e-16 * max(sj.length, 1e-12)
 
-                    U = kelvin_U((xi, yi), (xs, ys), E=self.E, nu=self.nu,
-                                 plane_strain=self.plane_strain, r0=r0)
+                for s, w in zip(xg, wg):
+                    xq, yq, jac = map_to_segment(sj, float(s))
+
+                    U = kelvin_U((xi, yi), (xq, yq), E=self.E, nu=self.nu,
+                                 plane_strain=self.plane_strain, r_floor=rf)
                     Gij += U * (w * jac)
 
                     if i != j:
-                        T = kelvin_T(field=(xi, yi), source=(xs, ys), n_source=(sj.nx, sj.ny), E=self.E, nu=self.nu, plane_strain=self.plane_strain, r0=Lc)
+                        T = kelvin_T(field=(xi, yi), source=(xq, yq), n_source=(sj.nx, sj.ny),
+                                     E=self.E, nu=self.nu, plane_strain=self.plane_strain, r_floor=rf)
                         Hij += T * (w * jac)
 
-                G[2*i:2*i+2, 2*j:2*j+2] += Gij
+                G[2 * i:2 * i + 2, 2 * j:2 * j + 2] = Gij
                 if i != j:
-                    H_off[2*i:2*i+2, 2*j:2*j+2] += Hij
+                    H_off[2 * i:2 * i + 2, 2 * j:2 * j + 2] = Hij
 
-        return G, H_off, r0
-
-    @staticmethod
-    def _K_from_Hoff(H_off: np.ndarray) -> np.ndarray:
-        N2 = H_off.shape[0]
-        if N2 % 2 != 0:
-            raise ValueError("H_off must be 2N×2N.")
-        N = N2 // 2
-
-        K = H_off.copy()
+        # H diagonal by rigid-translation (row-sum) closure:
+        # (cI + H) * const_u = 0  for smooth boundary.
+        c = 0.5
+        H = H_off.copy()
         for i in range(N):
-            i0 = 2*i
-            rowsum = np.zeros((2, 2), dtype=float)
+            row_sum = np.zeros((2, 2), dtype=float)
             for j in range(N):
-                j0 = 2*j
-                rowsum += H_off[i0:i0+2, j0:j0+2]
-            K[i0:i0+2, i0:i0+2] -= rowsum
-            K[i0:i0+2, i0:i0+2] += 0.5 * np.eye(2)
-        return K
+                if i == j:
+                    continue
+                row_sum += H_off[2 * i:2 * i + 2, 2 * j:2 * j + 2]
+            Hii = -c * np.eye(2) - row_sum
+            H[2 * i:2 * i + 2, 2 * i:2 * i + 2] = Hii
 
-    def solve(self, gauss_n: int = 8):
-        N = len(self.segments)
-        if N == 0:
-            raise ValueError("No boundary elements added.")
-
-        lam, mu, _ = _material(self.E, self.nu, self.plane_strain)
-
-        G, H_off, _ = self._assemble_G_and_Hoff(gauss_n=gauss_n)
-        K = self._K_from_Hoff(H_off)
-        A = K
-
-        # Known vectors
-        u_known = np.zeros(2*N, dtype=float)
-        t_known = np.zeros(2*N, dtype=float)
-
-        is_tr_elem = np.array(self._is_tr, dtype=bool)
+        CplusH = H.copy()
         for i in range(N):
-            if is_tr_elem[i]:  # traction prescribed
-                t_known[2*i]   = self._bcx[i]
-                t_known[2*i+1] = self._bcy[i]
-            else:              # displacement prescribed
-                u_known[2*i]   = self._bcx[i]
-                u_known[2*i+1] = self._bcy[i]
+            CplusH[2 * i:2 * i + 2, 2 * i:2 * i + 2] += c * np.eye(2)
 
-        is_tr = np.repeat(is_tr_elem, 2)
-        idx_u = np.where(is_tr)[0]      # u unknown where traction known
-        idx_t = np.where(~is_tr)[0]     # t unknown where u known
+        # Mixed BC system build
+        # Unknown vector x has size 2N:
+        #   if element has traction prescribed => unknown is u on that element
+        #   if element has displacement prescribed => unknown is t on that element
+        col_u, col_t = {}, {}
+        col = 0
+        for j, sj in enumerate(self.segs):
+            if sj.is_traction:
+                col_u[j] = col
+            else:
+                col_t[j] = col
+            col += 2
 
-        rhs = (G @ t_known) - (A @ u_known)
+        A = np.zeros((2 * N, 2 * N), dtype=float)
+        rhs = np.zeros((2 * N,), dtype=float)
 
-        # Base unknowns: [u_unknowns, t_unknowns]
-        M = np.hstack([A[:, idx_u], -G[:, idx_t]])
+        for i in range(N):
+            rows = slice(2 * i, 2 * i + 2)
 
-        # Optional constant-strain mode columns
-        if self.enable_strain_mode:
-            # The equation is: A(u - u_eps) = G(t - t_eps)
-            # => A u - G t + (-A u_eps + G t_eps) = 0
-            # Move known u_known/t_known to rhs, keep eps as unknown -> add columns:
-            #   col_eps = (-A * u_eps_basis + G * t_eps_basis)
-            cols = []
-            for k in range(3):
-                e = np.zeros(3, dtype=float)
-                e[k] = 1.0
+            for j in range(N):
+                sj = self.segs[j]
+                block_u = CplusH[rows, 2 * j:2 * j + 2]
+                block_t = G[rows, 2 * j:2 * j + 2]
 
-                u_eps = np.zeros(2*N, dtype=float)
-                t_eps = np.zeros(2*N, dtype=float)
-                for i, seg in enumerate(self.segments):
-                    ui = _u_from_strain(seg.xm, seg.ym, e)
-                    ti = _t_from_strain(seg.nx, seg.ny, e, lam, mu)
-                    u_eps[2*i:2*i+2] = ui
-                    t_eps[2*i:2*i+2] = ti
+                if sj.is_traction:
+                    # t known, u unknown
+                    A[rows, col_u[j]:col_u[j] + 2] += block_u
+                    rhs[rows] += block_t @ np.array([sj.bc_x, sj.bc_y], dtype=float)
+                else:
+                    # u known, t unknown
+                    rhs[rows] -= block_u @ np.array([sj.bc_x, sj.bc_y], dtype=float)
+                    A[rows, col_t[j]:col_t[j] + 2] -= block_t
 
-                col = (A @ u_eps) - (G @ t_eps)
-                cols.append(col.reshape(-1, 1))
-
-            EpsCols = np.hstack(cols)  # (2N,3)
-            M = np.hstack([M, EpsCols])
-
-        # Pure Neumann stabilization: constrain rigid modes on u (only affects displacement gauge)
-        pure_neumann = bool(np.all(is_tr_elem))
+        pure_neumann = all(s.is_traction for s in self.segs)
         if pure_neumann:
-            wC = 1e6
-            Cfull = np.zeros((3, 2*N), dtype=float)
-            Cfull[0, 0::2] = 1.0 / N  # mean ux
-            Cfull[1, 1::2] = 1.0 / N  # mean uy
-            xm = np.array([s.xm for s in self.segments], dtype=float)
-            ym = np.array([s.ym for s in self.segments], dtype=float)
-            Cfull[2, 0::2] = (-ym) / N
-            Cfull[2, 1::2] = ( xm) / N
+            # stabilize rigid-body modes (mean ux, mean uy, mean rotation) = 0
+            w = 1e6
+            A_aug = np.zeros((2 * N + 3, 2 * N), dtype=float)
+            rhs_aug = np.zeros((2 * N + 3,), dtype=float)
+            A_aug[:2 * N, :] = A
+            rhs_aug[:2 * N] = rhs
 
-            Cu = Cfull[:, idx_u]
-            n_u = len(idx_u)
-            n_t = len(idx_t)
-            n_eps = 3 if self.enable_strain_mode else 0
+            # mean ux
+            for j in range(N):
+                A_aug[2 * N + 0, col_u[j]] = 1.0
+            # mean uy
+            for j in range(N):
+                A_aug[2 * N + 1, col_u[j] + 1] = 1.0
+            # mean rotation about origin: Σ (x uy - y ux) = 0
+            for j in range(N):
+                xj, yj = colloc[j]
+                A_aug[2 * N + 2, col_u[j]] = -yj
+                A_aug[2 * N + 2, col_u[j] + 1] = xj
 
-            aug = np.zeros((3, n_u + n_t + n_eps), dtype=float)
-            aug[:, :n_u] = Cu
-            M = np.vstack([M, wC * aug])
-            rhs = np.concatenate([rhs, np.zeros(3)])
-
-        sol, *_ = np.linalg.lstsq(M, rhs, rcond=None)
-
-        # Unpack
-        n_u = len(idx_u)
-        n_t = len(idx_t)
-        u = u_known.copy()
-        t = t_known.copy()
-
-        u[idx_u] = sol[:n_u]
-        t[idx_t] = sol[n_u:n_u+n_t]
-
-        self.u_x = u[0::2].copy()
-        self.u_y = u[1::2].copy()
-        self.t_x = t[0::2].copy()
-        self.t_y = t[1::2].copy()
-
-        if self.enable_strain_mode:
-            self.eps = sol[n_u+n_t:n_u+n_t+3].copy()
+            A_aug[2 * N:, :] *= w
+            sol, *_ = np.linalg.lstsq(A_aug, rhs_aug, rcond=None)
         else:
-            self.eps = np.zeros(3, dtype=float)
+            sol = np.linalg.solve(A, rhs)
 
-    def compute_displacement_at_point(self, x: float, y: float, gauss_n: int = 8) -> Tuple[float, float]:
-        if self.u_x is None:
+        # Unpack boundary fields
+        u_x = np.zeros(N, dtype=float)
+        u_y = np.zeros(N, dtype=float)
+        t_x = np.zeros(N, dtype=float)
+        t_y = np.zeros(N, dtype=float)
+
+        for j, sj in enumerate(self.segs):
+            if sj.is_traction:
+                u_x[j] = sol[col_u[j]]
+                u_y[j] = sol[col_u[j] + 1]
+                t_x[j] = sj.bc_x
+                t_y[j] = sj.bc_y
+            else:
+                t_x[j] = sol[col_t[j]]
+                t_y[j] = sol[col_t[j] + 1]
+                u_x[j] = sj.bc_x
+                u_y[j] = sj.bc_y
+
+        self.u_x, self.u_y, self.t_x, self.t_y = u_x, u_y, t_x, t_y
+
+    # -----------------------------
+    # Interior evaluation (Somigliana)
+    # -----------------------------
+    def compute_displacement_at_point(self, x: float, y: float, gauss_n: int = 12) -> Tuple[float, float]:
+        if self.u_x is None or self.t_x is None:
             raise RuntimeError("Call solve() first.")
 
-        xg, wg = _gauss_legendre(gauss_n)
-        Lc = float(np.mean([s.L for s in self.segments]))
-        r0 = Lc
-
+        xg, wg = gauss_legendre(int(gauss_n))
         u = np.zeros(2, dtype=float)
 
-        # Add strain-mode particular solution if enabled
-        if self.enable_strain_mode and self.eps is not None:
-            u += _u_from_strain(x, y, self.eps)
-
-        for j, seg in enumerate(self.segments):
-            uj = np.array([self.u_x[j], self.u_y[j]], dtype=float)
+        for j, sj in enumerate(self.segs):
             tj = np.array([self.t_x[j], self.t_y[j]], dtype=float)
+            uj = np.array([self.u_x[j], self.u_y[j]], dtype=float)
+            rf = 1e-16 * max(sj.length, 1e-12)
 
             for s, w in zip(xg, wg):
-                xs = 0.5*(1.0 - s)*seg.x1 + 0.5*(1.0 + s)*seg.x2
-                ys = 0.5*(1.0 - s)*seg.y1 + 0.5*(1.0 + s)*seg.y2
-                jac = 0.5 * seg.L
+                xq, yq, jac = map_to_segment(sj, float(s))
 
-                U = kelvin_U((x, y), (xs, ys), E=self.E, nu=self.nu,
-                             plane_strain=self.plane_strain, r0=r0)
-                T = kelvin_T(field=(x, y), source=(xs, ys), n_source=(seg.nx, seg.ny),
-                            E=self.E, nu=self.nu, plane_strain=self.plane_strain, r0=r0)
+                U = kelvin_U((x, y), (xq, yq), E=self.E, nu=self.nu,
+                             plane_strain=self.plane_strain, r_floor=rf)
+                T = kelvin_T(field=(x, y), source=(xq, yq), n_source=(sj.nx, sj.ny),
+                             E=self.E, nu=self.nu, plane_strain=self.plane_strain, r_floor=rf)
 
-                # Somigliana identity for interior points:
-                # u(x) = ∫_Γ U(x,ξ) t(ξ) dΓ(ξ)  -  ∫_Γ T(x,ξ) u(ξ) dΓ(ξ)
                 u += (U @ tj - T @ uj) * (w * jac)
 
+        # interior point coefficient is I (PDF Eq 4.16 for internal point)
         return float(u[0]), float(u[1])
 
-    def compute_stress_at_point(self, x: float, y: float, fd: Optional[float] = None, gauss_n: int = 8):
-        if fd is None:
-            Lc = float(np.mean([s.L for s in self.segments]))
-            fd = 1e-6 * max(Lc, 1e-12)
+    # -----------------------------
+    # Stress from FD displacement gradients
+    # -----------------------------
+    def compute_stress_at_point(self, x: float, y: float, fd: float = 1e-6) -> Tuple[float, float, float]:
+        ux_p, uy_p = self.compute_displacement_at_point(x + fd, y)
+        ux_m, uy_m = self.compute_displacement_at_point(x - fd, y)
+        vx_p, vy_p = self.compute_displacement_at_point(x, y + fd)
+        vx_m, vy_m = self.compute_displacement_at_point(x, y - fd)
 
-        def disp(xx, yy):
-            return np.array(self.compute_displacement_at_point(xx, yy, gauss_n=gauss_n), dtype=float)
+        dux_dx = (ux_p - ux_m) / (2.0 * fd)
+        duy_dx = (uy_p - uy_m) / (2.0 * fd)
+        dux_dy = (vx_p - vx_m) / (2.0 * fd)
+        duy_dy = (vy_p - vy_m) / (2.0 * fd)
 
-        uxp = disp(x + fd, y)
-        uxm = disp(x - fd, y)
-        uyp = disp(x, y + fd)
-        uym = disp(x, y - fd)
+        exx = dux_dx
+        eyy = duy_dy
+        exy = 0.5 * (dux_dy + duy_dx)
 
-        du_dx = (uxp - uxm) / (2.0 * fd)
-        du_dy = (uyp - uym) / (2.0 * fd)
+        mu = shear_modulus(self.E, self.nu)
+        lam = lame_lambda(self.E, self.nu, plane_strain=self.plane_strain)
 
-        lam, mu, _ = _material(self.E, self.nu, self.plane_strain)
-
-        eps_xx = du_dx[0]
-        eps_yy = du_dy[1]
-        eps_xy = 0.5 * (du_dy[0] + du_dx[1])
-
-        tr = eps_xx + eps_yy
-        sxx = lam * tr + 2.0 * mu * eps_xx
-        syy = lam * tr + 2.0 * mu * eps_yy
-        sxy = 2.0 * mu * eps_xy
-
+        tr = exx + eyy
+        sxx = lam * tr + 2.0 * mu * exx
+        syy = lam * tr + 2.0 * mu * eyy
+        sxy = 2.0 * mu * exy
         return float(sxx), float(syy), float(sxy)
