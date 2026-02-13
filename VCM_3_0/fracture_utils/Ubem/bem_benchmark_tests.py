@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from typing import Dict
 import numpy as np
 
-from .bem_solver_v2 import BEMSolver2D
+from .bem_solver import BEMSolver2D
 
 
 @dataclass

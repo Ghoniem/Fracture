@@ -1,5 +1,5 @@
 """
-bem_solver_v1_from_pdf.py
+bem_solver.py
 
 2D elastostatic BEM (constant elements, collocation) built from the
 self-consistent equations in your PDF (Eq. 4.16–4.21, 4.18).
@@ -30,6 +30,29 @@ from dataclasses import dataclass
 import math
 import numpy as np
 from typing import List, Tuple, Optional
+
+
+# ----------------------------------------------------------------------
+# Material helper (Lamé parameters + Muskhelishvili κ)
+# ----------------------------------------------------------------------
+def _material(E: float, nu: float, h: float, plane_strain: bool = True):
+    """Return (lambda, mu, kappa) for 2D elastostatics.
+
+    - mu is the shear modulus (same for plane stress/strain).
+    - lambda is the 3D Lamé parameter for plane strain; for plane stress we return
+      the 2D-effective lambda' (not used if you use explicit plane-stress mapping).
+    - kappa is the Muskhelishvili constant used in Kelvin kernels:
+        plane strain: kappa = 3 - 4 nu
+        plane stress: kappa = (3 - nu)/(1 + nu)
+    """
+    mu = E / (2.0 * (1.0 + nu))
+    if plane_strain:
+        lam = E * nu / ((1.0 + nu) * (1.0 - 2.0 * nu))
+        kappa = 3.0 - 4.0 * nu
+    else:
+        lam = 2.0 * mu * nu / (1.0 - nu)
+        kappa = (3.0 - nu) / (1.0 + nu)
+    return lam, mu, kappa
 
 
 # -----------------------------
@@ -206,14 +229,157 @@ def kelvin_T(field: Tuple[float, float],
     pref = -1.0 / (4.0 * math.pi * (1.0 - nu) * r)
     return pref * (drdn * A - one_m_2nu * B)
 
+def kelvin_dU_dfield(field: Tuple[float, float],
+                     source: Tuple[float, float],
+                     E: float, nu: float, plane_strain: bool,
+                     r_floor: float = 1e-16) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Spatial derivatives of Kelvin displacement kernel U with respect to FIELD coordinates.
+
+    Returns (dU/dx, dU/dy), each a (2,2) matrix with components:
+        (dUdx)_{ij} = ∂U_{ij}/∂x
+        (dUdy)_{ij} = ∂U_{ij}/∂y
+
+    Using U_{ij} = c [ κ ln(1/r) δ_{ij} + g_i g_j ],
+    with r = |x - ξ|, g = (x-ξ)/r.
+    """
+    x, y = field
+    xs, ys = source
+    rx = x - xs
+    ry = y - ys
+    r2 = rx * rx + ry * ry
+    if r2 < r_floor * r_floor:
+        r2 = r_floor * r_floor
+    r = math.sqrt(r2)
+    inv_r = 1.0 / r
+
+    # unit vector g = rvec / r
+    gx = rx * inv_r
+    gy = ry * inv_r
+
+    G = shear_modulus(E, nu)
+    coeff = 1.0 / (8.0 * math.pi * G * (1.0 - nu))
+    kappa = kappa_from_nu(nu, plane_strain)
+
+    # ∂ ln(1/r) / ∂x_k = -(g_k)/r
+    dln_dx = -gx * inv_r
+    dln_dy = -gy * inv_r
+
+    # ∂g_i/∂x_k = (δ_{ik} - g_i g_k)/r
+    # For k = x:
+    dgx_dx = (1.0 - gx * gx) * inv_r
+    dgy_dx = (0.0 - gy * gx) * inv_r
+    # For k = y:
+    dgx_dy = (0.0 - gx * gy) * inv_r
+    dgy_dy = (1.0 - gy * gy) * inv_r
+
+    # derivative of (g_i g_j)
+    # k = x
+    dgg_dx = np.array([
+        [dgx_dx * gx + gx * dgx_dx, dgx_dx * gy + gx * dgy_dx],
+        [dgy_dx * gx + gy * dgx_dx, dgy_dx * gy + gy * dgy_dx],
+    ], dtype=float)
+    # k = y
+    dgg_dy = np.array([
+        [dgx_dy * gx + gx * dgx_dy, dgx_dy * gy + gx * dgy_dy],
+        [dgy_dy * gx + gy * dgx_dy, dgy_dy * gy + gy * dgy_dy],
+    ], dtype=float)
+
+    dUdx = coeff * (kappa * dln_dx * np.eye(2) + dgg_dx)
+    dUdy = coeff * (kappa * dln_dy * np.eye(2) + dgg_dy)
+    return dUdx, dUdy
+
+
+def kelvin_dT_dfield(field: Tuple[float, float],
+                     source: Tuple[float, float],
+                     n_source: Tuple[float, float],
+                     E: float, nu: float, plane_strain: bool,
+                     r_floor: float = 1e-16) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Spatial derivatives of Kelvin traction kernel T with respect to FIELD coordinates.
+
+    This matches kelvin_T(), which uses rvec = source - field (derivatives at traction point).
+    Here we differentiate with respect to field coordinates, so ∂/∂x_k acts on rvec with a minus:
+        rvec = ξ - x  =>  ∂r_i/∂x_k = -δ_{ik}
+
+    Returns (dT/dx, dT/dy), each a (2,2) matrix.
+    """
+    xi, yi = field
+    x, y = source
+    nx, ny = n_source
+
+    rx = x - xi
+    ry = y - yi
+    r2 = rx * rx + ry * ry
+    if r2 < r_floor * r_floor:
+        r2 = r_floor * r_floor
+    r = math.sqrt(r2)
+    inv_r = 1.0 / r
+    inv_r2 = inv_r * inv_r
+
+    gx = rx * inv_r
+    gy = ry * inv_r
+    g = np.array([gx, gy], dtype=float)
+    n = np.array([nx, ny], dtype=float)
+
+    one_m_2nu = 1.0 - 2.0 * nu
+
+    drdn = gx * nx + gy * ny  # g·n
+
+    # pref = -1/(4π(1-ν) r)
+    C1 = 1.0 / (4.0 * math.pi * (1.0 - nu))
+    pref = -C1 * inv_r
+
+    # derivatives wrt field:
+    # ∂r/∂x_k = -g_k
+    # ∂(1/r)/∂x_k = g_k / r^2
+    dpref_dx = -C1 * (gx * inv_r2)
+    dpref_dy = -C1 * (gy * inv_r2)
+
+    # ∂g_i/∂x_k = -(δ_{ik} - g_i g_k)/r
+    dgx_dx = -(1.0 - gx * gx) * inv_r
+    dgy_dx = -(-gy * gx) * inv_r  # = +(gy*gx)/r
+    dgx_dy = -(-gx * gy) * inv_r  # = +(gx*gy)/r
+    dgy_dy = -(1.0 - gy * gy) * inv_r
+
+    dg_dx = np.array([dgx_dx, dgy_dx], dtype=float)
+    dg_dy = np.array([dgx_dy, dgy_dy], dtype=float)
+
+    # ∂drdn/∂x_k = n·∂g/∂x_k
+    ddrdn_dx = float(np.dot(n, dg_dx))
+    ddrdn_dy = float(np.dot(n, dg_dy))
+
+    # A = (1-2ν)I + 2 g⊗g
+    outer = np.outer(g, g)
+    A = one_m_2nu * np.eye(2) + 2.0 * outer
+
+    # ∂A/∂x_k = 2 (∂g⊗g + g⊗∂g)
+    douter_dx = np.outer(dg_dx, g) + np.outer(g, dg_dx)
+    douter_dy = np.outer(dg_dy, g) + np.outer(g, dg_dy)
+    dA_dx = 2.0 * douter_dx
+    dA_dy = 2.0 * douter_dy
+
+    # B = g⊗n - n⊗g
+    B = np.outer(g, n) - np.outer(n, g)
+    dB_dx = np.outer(dg_dx, n) - np.outer(n, dg_dx)
+    dB_dy = np.outer(dg_dy, n) - np.outer(n, dg_dy)
+
+    core = (drdn * A - one_m_2nu * B)
+
+    dTdx = dpref_dx * core + pref * (ddrdn_dx * A + drdn * dA_dx - one_m_2nu * dB_dx)
+    dTdy = dpref_dy * core + pref * (ddrdn_dy * A + drdn * dA_dy - one_m_2nu * dB_dy)
+    return dTdx, dTdy
+
+
 
 # -----------------------------
 # Solver
 # -----------------------------
 class BEMSolver2D:
-    def __init__(self, E: float, nu: float, plane_strain: bool = True):
+    def __init__(self, E: float, nu: float, h: float, plane_strain: bool = True):
         self.E = float(E)
         self.nu = float(nu)
+        self.h = float(h)
         self.plane_strain = bool(plane_strain)
 
         self.segs: List[Segment] = []
@@ -395,26 +561,88 @@ class BEMSolver2D:
     # -----------------------------
     # Stress from FD displacement gradients
     # -----------------------------
-    def compute_stress_at_point(self, x: float, y: float, fd: float = 1e-6) -> Tuple[float, float, float]:
-        ux_p, uy_p = self.compute_displacement_at_point(x + fd, y)
-        ux_m, uy_m = self.compute_displacement_at_point(x - fd, y)
-        vx_p, vy_p = self.compute_displacement_at_point(x, y + fd)
-        vx_m, vy_m = self.compute_displacement_at_point(x, y - fd)
+    
+    # -----------------------------
+    # Interior displacement gradient and stress (analytic kernel derivatives)
+    # -----------------------------
+    def compute_grad_u_at_point(self, x: float, y: float, gauss_n: int = 12) -> np.ndarray:
+        """
+        Compute displacement gradient u_{i,k}(x) for an interior point.
 
-        dux_dx = (ux_p - ux_m) / (2.0 * fd)
-        duy_dx = (uy_p - uy_m) / (2.0 * fd)
-        dux_dy = (vx_p - vx_m) / (2.0 * fd)
-        duy_dy = (vy_p - vy_m) / (2.0 * fd)
+        Returns dudx where dudx[i,k] = ∂u_i/∂x_k, with k=0->x, k=1->y.
+        Uses analytic derivatives of U and T kernels:
+            u_{i,k}(x)=∫Γ U_{ij,k}(x,ξ) t_j(ξ) dΓ(ξ) - ∫Γ T_{ij,k}(x,ξ) u_j(ξ) dΓ(ξ)
+        """
+        if self.u_x is None or self.t_x is None:
+            raise RuntimeError("Call solve() first.")
 
+        xg, wg = gauss_legendre(int(gauss_n))
+        dudx = np.zeros((2, 2), dtype=float)
+
+        for j, sj in enumerate(self.segs):
+            tj = np.array([self.t_x[j], self.t_y[j]], dtype=float)
+            uj = np.array([self.u_x[j], self.u_y[j]], dtype=float)
+            rf = 1e-16 * max(sj.length, 1e-12)
+
+            for s, w in zip(xg, wg):
+                xq, yq, jac = map_to_segment(sj, float(s))
+
+                dUdx, dUdy = kelvin_dU_dfield((x, y), (xq, yq), E=self.E, nu=self.nu,
+                                             plane_strain=self.plane_strain, r_floor=rf)
+                dTdx, dTdy = kelvin_dT_dfield(field=(x, y), source=(xq, yq), n_source=(sj.nx, sj.ny),
+                                             E=self.E, nu=self.nu, plane_strain=self.plane_strain, r_floor=rf)
+
+                # k=0 (x-derivative)
+                dudx[:, 0] += (dUdx @ tj - dTdx @ uj) * (w * jac)
+                # k=1 (y-derivative)
+                dudx[:, 1] += (dUdy @ tj - dTdy @ uj) * (w * jac)
+
+        return dudx
+
+    def compute_stress_at_point(self,
+                                x: float, y: float,
+                                gauss_n: int = 12,
+                                fd: Optional[float] = None) -> Tuple[float, float, float]:
+        """
+        Compute (σ_xx, σ_yy, σ_xy) at an interior point.
+
+        Default: uses analytic kernel derivatives via compute_grad_u_at_point().
+
+        If fd is not None, uses FD-from-displacement as a diagnostic only.
+        """
+        if fd is not None:
+            ux_p, uy_p = self.compute_displacement_at_point(x + fd, y, gauss_n=gauss_n)
+            ux_m, uy_m = self.compute_displacement_at_point(x - fd, y, gauss_n=gauss_n)
+            vx_p, vy_p = self.compute_displacement_at_point(x, y + fd, gauss_n=gauss_n)
+            vx_m, vy_m = self.compute_displacement_at_point(x, y - fd, gauss_n=gauss_n)
+
+            dux_dx = (ux_p - ux_m) / (2.0 * fd)
+            duy_dx = (uy_p - uy_m) / (2.0 * fd)
+            dux_dy = (vx_p - vx_m) / (2.0 * fd)
+            duy_dy = (vy_p - vy_m) / (2.0 * fd)
+        else:
+            grad = self.compute_grad_u_at_point(x, y, gauss_n=gauss_n)
+            dux_dx, dux_dy = float(grad[0, 0]), float(grad[0, 1])
+            duy_dx, duy_dy = float(grad[1, 0]), float(grad[1, 1])
+
+        # small strain tensor
         exx = dux_dx
         eyy = duy_dy
         exy = 0.5 * (dux_dy + duy_dx)
 
-        mu = shear_modulus(self.E, self.nu)
-        lam = lame_lambda(self.E, self.nu, plane_strain=self.plane_strain)
+        E, nu, h = self.E, self.nu, self.h
 
-        tr = exx + eyy
-        sxx = lam * tr + 2.0 * mu * exx
-        syy = lam * tr + 2.0 * mu * eyy
-        sxy = 2.0 * mu * exy
+        if self.plane_strain:
+            lam, mu, _ = _material(E, nu, h, plane_strain=True)
+            sxx = (2.0 * mu * exx + lam * (exx + eyy))/h
+            syy = (2.0 * mu * eyy + lam * (exx + eyy))/h
+            sxy = (2.0 * mu * exy)/h
+        else:
+            # plane stress
+            mu = shear_modulus(E, nu)
+            fac = E / (1.0 - nu * nu)
+            sxx = (fac * (exx + nu * eyy))/h
+            syy = (fac * (eyy + nu * exx))/h
+            sxy = (2.0 * mu * exy)/h
+
         return float(sxx), float(syy), float(sxy)
