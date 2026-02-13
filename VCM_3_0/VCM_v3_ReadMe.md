@@ -757,3 +757,216 @@ BEMOutputWriter.plot_displacement_field(nodes, bem.displacements)
 
 if __name__ == "__main__":
     print(QUICK_REFERENCE)
+
+
+
+# 2D Linear Elasticity Boundary Element Method (BEM)
+## Self-Consistent Formulation (Plane Strain / Plane Stress)
+
+This document reconstructs the 2D elastostatic Boundary Element Method
+directly from the Somigliana identity using the Kelvin fundamental solution.
+All symbols and equation names are defined explicitly so they can be
+implemented in code with identical naming.
+
+---
+
+# 1. Governing Equations
+
+## (EQ1) Equilibrium
+$$
+\sigma_{ij,j} = 0
+$$
+
+## (EQ2) Constitutive Law
+
+Plane strain:
+
+$$
+\lambda = \frac{E\nu}{(1+\nu)(1-2\nu)}, \qquad
+\mu = \frac{E}{2(1+\nu)}
+$$
+
+Plane stress:
+
+$$
+\lambda = \frac{2\mu\nu}{1-\nu}, \qquad
+\mu = \frac{E}{2(1+\nu)}
+$$
+
+$$
+\sigma_{ij} = \lambda \delta_{ij} \varepsilon_{kk}
++ 2\mu \varepsilon_{ij}
+$$
+
+---
+
+# 2. Kelvin Fundamental Solution
+
+Let:
+
+$$
+r_i = x_i - \xi_i, \qquad
+r = \sqrt{r_k r_k}
+$$
+
+Define:
+
+Plane strain:
+$$
+\kappa = 3 - 4\nu
+$$
+
+Plane stress:
+$$
+\kappa = \frac{3-\nu}{1+\nu}
+$$
+
+---
+
+## (EQ3) Kelvin Displacement Tensor
+
+$$
+U_{ij}(x,\xi) =
+\frac{1}{8\pi\mu}
+\left[
+\kappa \ln r \, \delta_{ij}
++ \frac{r_i r_j}{r^2}
+\right]
+$$
+
+---
+
+## (EQ4) Kelvin Traction Tensor
+
+Traction:
+
+$$
+T_{ij}(x,\xi) =
+\sigma_{ik}(x,\xi) n_k(\xi)
+$$
+
+Result:
+
+$$
+T_{ij}(x,\xi)
+= -\frac{1}{4\pi (1-\nu) r^2}
+\left[
+(1-2\nu)\delta_{ij}
++ 2\frac{r_i r_j}{r^2}
+\right]
+(r_k n_k)
+$$
+
+---
+
+# 3. Somigliana Identity
+
+## (EQ5)
+
+$$
+c_{ij}(x) u_j(x)
++ \int_\Gamma T_{ij}(x,\xi) u_j(\xi) d\Gamma(\xi)
+= \int_\Gamma U_{ij}(x,\xi) t_j(\xi) d\Gamma(\xi)
+$$
+
+Interior point:
+
+$$
+c_{ij} = \delta_{ij}
+$$
+
+Smooth boundary point:
+
+$$
+c_{ij} = \frac{1}{2}\delta_{ij}
+$$
+
+---
+
+# 4. Discrete Constant Element Form
+
+Boundary divided into N straight elements.
+
+## (EQ6)
+
+$$
+\frac{1}{2} u_i
++ \sum_{j=1}^N
+\int_{\Gamma_j}
+T_{ij} u_j d\Gamma
+=
+\sum_{j=1}^N
+\int_{\Gamma_j}
+U_{ij} t_j d\Gamma
+$$
+
+Define matrices:
+
+## (EQ7)
+
+$$
+H_{ij} =
+\int_{\Gamma_j} T_{ij} d\Gamma
+$$
+
+$$
+G_{ij} =
+\int_{\Gamma_j} U_{ij} d\Gamma
+$$
+
+## (EQ8)
+
+$$
+(C + H) u = G t
+$$
+
+Where:
+
+$$
+C = \frac{1}{2} I
+$$
+
+---
+
+# 5. Interior Stress
+
+## (EQ9)
+
+$$
+u_i(x)
+=
+\int_\Gamma U_{ij} t_j d\Gamma
+-
+\int_\Gamma T_{ij} u_j d\Gamma
+$$
+
+Strain:
+
+$$
+\varepsilon_{ij} =
+\frac{1}{2}(u_{i,j}+u_{j,i})
+$$
+
+Stress:
+
+$$
+\sigma_{ij}
+= \lambda \delta_{ij} \varepsilon_{kk}
++ 2\mu \varepsilon_{ij}
+$$
+
+---
+
+# Implementation Rules
+
+1. Use EQ3 and EQ4 exactly.
+2. Use C = 1/2 I explicitly.
+3. No row-sum closure.
+4. No calibration constants.
+5. Use midpoint collocation.
+6. Constant boundary elements.
+
+---
+
+End of document.
+
