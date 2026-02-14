@@ -390,35 +390,67 @@ class DCEPlotterV4:
         save_fig(fig, self.out_dir, "displacement_vector_field", dpi=150)
         return fig
 
+
     def plot_stress_components_global(
         self,
         opts: StressPlotOptsV4,
         components: Sequence[str] = ("sxx", "syy", "sxy"),
-    ) -> Dict[str, plt.Figure]:
+        *,
+        grid: Optional[tuple[np.ndarray, np.ndarray]] = None,
+        save_arrays: bool = False,
+        return_arrays: bool = False,
+        arrays_prefix: str = "stress",
+        show: bool = True,
+        save: bool = True,
+    ) -> Dict[str, plt.Figure] | tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, Dict[str, plt.Figure]]:
+        """Plot global stress components on a regular grid.
+
+        Additions (for Coupled VCM–BEM workflows)
+        ----------------------------------------
+        - grid=(xs, ys): override plotting grid using 1D coordinate arrays (meters)
+        - save_arrays: save xs/ys and component arrays (Pa) to out_dir as:
+            {arrays_prefix}_xs.npy, {arrays_prefix}_ys.npy,
+            {arrays_prefix}_sxx.npy, {arrays_prefix}_syy.npy, {arrays_prefix}_sxy.npy
+        - return_arrays: return (xs, ys, Sxx, Syy, Sxy, figs) where stresses are in Pa
+        """
         opts = StressPlotOptsV4(**vars(opts))
 
         V = self.calc.network.vertices
         ext = network_extent(V)
-        half_w = 0.5 * float(opts.extent_factor) * ext
 
-        x = np.linspace(-half_w, half_w, int(opts.n_grid))
-        y = np.linspace(-half_w, half_w, int(opts.n_grid))
-        Xg, Yg = np.meshgrid(x, y)
-
-        sxx, syy, sxy = self.res.stress_field_global(Xg, Yg, add_remote=bool(opts.add_remote))
-        fields = {"sxx": sxx / 1e6, "syy": syy / 1e6, "sxy": sxy / 1e6}
-
-        sig = getattr(self.calc, "applied_tensor", None)
-        if callable(sig):
-            remote = np.asarray(sig(), float) / 1e6
+        if grid is None:
+            half_w = 0.5 * float(opts.extent_factor) * ext
+            xs = np.linspace(-half_w, half_w, int(opts.n_grid))
+            ys = np.linspace(-half_w, half_w, int(opts.n_grid))
         else:
+            xs = np.asarray(grid[0], float).reshape(-1)
+            ys = np.asarray(grid[1], float).reshape(-1)
+
+        Xg, Yg = np.meshgrid(xs, ys, indexing="xy")
+
+        # Stress field in Pa from results object
+        sxx, syy, sxy = self.res.stress_field_global(Xg, Yg, add_remote=bool(opts.add_remote))
+        Sxx_pa = np.asarray(sxx, float)
+        Syy_pa = np.asarray(syy, float)
+        Sxy_pa = np.asarray(sxy, float)
+
+        # For plotting, convert to MPa
+        fields = {"sxx": Sxx_pa / 1e6, "syy": Syy_pa / 1e6, "sxy": Sxy_pa / 1e6}
+
+        # Reference magnitudes for robust color limits
+        ref_map = {"sxx": 0.0, "syy": 0.0, "sxy": 0.0}
+        try:
             ap = self.calc.applied
-            remote = np.array([[ap.sigma_xx, ap.sigma_xy], [ap.sigma_xy, ap.sigma_yy]], float) / 1e6
-        ref_map = {"sxx": float(remote[0, 0]), "syy": float(remote[1, 1]), "sxy": float(remote[0, 1])}
+            is_spatial = bool(getattr(ap, "sigma_func", None))
+            if not is_spatial:
+                remote = np.array([[ap.sigma_xx, ap.sigma_xy], [ap.sigma_xy, ap.sigma_yy]], float) / 1e6
+                ref_map = {"sxx": float(remote[0, 0]), "syy": float(remote[1, 1]), "sxy": float(remote[0, 1])}
+        except Exception:
+            pass
 
         figs: Dict[str, plt.Figure] = {}
         for comp in components:
-            comp = comp.lower()
+            comp = str(comp).lower()
             if comp not in fields:
                 continue
             Z = np.array(fields[comp], float)
@@ -439,38 +471,29 @@ class DCEPlotterV4:
                     proj = p0.reshape(1, 2) + tt.reshape(-1, 1) * d.reshape(1, 2)
                     dist = np.hypot(PX.T[:, 0] - proj[:, 0], PX.T[:, 1] - proj[:, 1]).reshape(Xg.shape)
 
-                    dx = x[1] - x[0]
-                    dy = y[1] - y[0]
+                    dx = xs[1] - xs[0] if xs.size > 1 else 0.0
+                    dy = ys[1] - ys[0] if ys.size > 1 else 0.0
                     h = max(abs(dx), abs(dy))
-                    width = max(opts.mask_width_factor * ext, 2.0 * h)
+                    width = max(getattr(opts, "mask_width_factor", 0.0) * ext, 2.0 * h)
                     Z[dist < width] = np.nan
 
             Zp = apply_clip_percentiles(Z, getattr(opts, "clip_percentiles", None))
-
-            ref = abs(ref_map.get(comp, 0.0))
+            ref = abs(float(ref_map.get(comp, 0.0)))
             vmin, vmax = robust_vmin_vmax(Zp, opts, ref=ref)
 
             norm = None
             norm_name = str(getattr(opts, "norm", "linear") or "linear").lower()
             if norm_name == "symlog":
                 from matplotlib.colors import SymLogNorm
+                linth = float(getattr(opts, "symlog_linthresh", 1.0))
                 norm = SymLogNorm(
-                    linthresh=float(getattr(opts, "symlog_linthresh", 1.0)),
+                    linthresh=linth,
                     linscale=float(getattr(opts, "symlog_linscale", 1.0)),
                     vmin=float(vmin),
                     vmax=float(vmax),
                     base=float(getattr(opts, "symlog_base", 10.0)),
                 )
-                levels = symlog_levels(vmin, vmax, float(getattr(opts, "symlog_linthresh", 1.0)), int(opts.n_bands) + 1)
-            elif norm_name == "log":
-                from matplotlib.colors import LogNorm
-                Zpos = Zp[np.isfinite(Zp) & (Zp > 0)]
-                vmin_pos = float(np.nanmin(Zpos)) if Zpos.size else 1e-12
-                vmax_pos = float(np.nanmax(Zpos)) if Zpos.size else max(1.0, vmin_pos * 10.0)
-                vmin_pos = max(vmin_pos, 1e-12)
-                vmax_pos = max(vmax_pos, vmin_pos * 1.01)
-                norm = LogNorm(vmin=vmin_pos, vmax=vmax_pos)
-                levels = np.geomspace(vmin_pos, vmax_pos, int(opts.n_bands) + 1)
+                levels = symlog_levels(vmin, vmax, linth, int(opts.n_bands) + 1)
             else:
                 levels = np.linspace(vmin, vmax, int(opts.n_bands) + 1)
 
@@ -487,7 +510,20 @@ class DCEPlotterV4:
             ax.axis("equal")
             ax.grid(True, alpha=0.15)
 
-            save_fig(fig, self.out_dir, f"stress_{comp}", dpi=opts.dpi)
+            if save:
+                save_fig(fig, self.out_dir, f"stress_{comp}", dpi=opts.dpi)
+            if show:
+                plt.show()
             figs[comp] = fig
+
+        if save_arrays:
+            np.save(self.out_dir / f"{arrays_prefix}_xs.npy", xs)
+            np.save(self.out_dir / f"{arrays_prefix}_ys.npy", ys)
+            np.save(self.out_dir / f"{arrays_prefix}_sxx.npy", Sxx_pa)
+            np.save(self.out_dir / f"{arrays_prefix}_syy.npy", Syy_pa)
+            np.save(self.out_dir / f"{arrays_prefix}_sxy.npy", Sxy_pa)
+
+        if return_arrays:
+            return xs, ys, Sxx_pa, Syy_pa, Sxy_pa, figs
 
         return figs

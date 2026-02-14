@@ -332,12 +332,8 @@ def assemble_operator(
     E = float(material.E)
     nu = float(material.nu)
     mu = E / (2.0 * (1.0 + nu))
-
-    sig = np.array([
-        [float(applied.sigma_xx), float(applied.sigma_xy)],
-        [float(applied.sigma_xy), float(applied.sigma_yy)],
-    ], float)
-
+    # Applied stress can be constant or spatially varying.
+    # Use applied.tensor_at(X) so uncoupled BEM fields are supported.
     row0 = 0
     for pid_i, pp_i in enumerate(poly_panels):
         Nci = int(len(pp_i["x_col"]))
@@ -345,8 +341,8 @@ def assemble_operator(
             x_i = pp_i["x_col"][ic]
             t_i = pp_i["t_col"][ic]
             n_i = pp_i["n_col"][ic]
-
-            tr = sig @ n_i.reshape(2,)
+            sig_i = applied.tensor_at(np.asarray(x_i, float).reshape(1, 2))[0]
+            tr = sig_i @ n_i.reshape(2,)
             tn0 = float(np.dot(n_i, tr))
             ts0 = float(np.dot(t_i, tr))
             rhs[row0] = -tn0
