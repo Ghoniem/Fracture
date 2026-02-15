@@ -12,8 +12,8 @@ At selected outer-cycle checkpoints (typically each post_simplify):
   4) Re-solve BEM and overwrite the saved BEM stress grid (xs/ys/Sxx/Syy/Sxy).
   5) Next crack solve uses the updated BEM field.
 
-This file intentionally uses a grid+interpolate approach for step (1) so it works with your current API.
-Later, we can replace it with a direct point evaluator (faster + more accurate).
+Boundary tractions from the crack field are evaluated directly at boundary points
+using the network result object (no grid interpolation of crack stresses).
 """
 
 from __future__ import annotations
@@ -94,7 +94,7 @@ def _interp_from_grid(xs, ys, Z, Xq):
     return (1 - tx) * (1 - ty) * z00 + tx * (1 - ty) * z10 + (1 - tx) * ty * z01 + tx * ty * z11
 
 
-def compute_crack_boundary_tractions_via_grid(
+def compute_crack_boundary_tractions_at_points(
     *,
     res,
     boundary_mesh,
@@ -103,101 +103,68 @@ def compute_crack_boundary_tractions_via_grid(
     coupling: IterativeCouplingParams,
 ):
     """
-    Estimate *CRACK-INDUCED* boundary tractions:
+    Estimate *CRACK-INDUCED* boundary tractions directly at boundary points:
 
-        t_cr = (σ_total - σ_applied) · n
+        t_cr = σ_crack · n
 
-    Why subtract σ_applied?
-    ----------------------
-    In your DCE solve, the applied field is spatial (from the BEM grid) and is
-    included in the stress evaluation even when add_remote=False. For iterative
-    coupling we need ONLY the perturbation caused by the crack; otherwise we would
-    (incorrectly) reverse the entire applied traction and blow up the BEM solution.
-
-    Inputs
-    ------
-    bem_dir must contain (Pa):
-      xs.npy, ys.npy, Sxx.npy, Syy.npy, Sxy.npy
+    This uses:
+      res.stress_field_global(X, Y, add_remote=False)
+    which returns crack-induced stresses from the solved crack network only.
+    No crack-stress grid interpolation is used for boundary traction extraction.
 
     Returns
     -------
     tx_cr, ty_cr : arrays of length n_boundary_elements, in Pa
     """
-    from fracture_utils.Uplotter.core import DCEPlotterV4, StressPlotOptsV4
-
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # boundary sample points + normals
+    # boundary points + outward normals
     Xb, Nb = _disk_boundary_midpoints_normals(boundary_mesh)
+    xb = np.asarray(Xb[:, 0], float)
+    yb = np.asarray(Xb[:, 1], float)
 
-    # bbox from boundary points
-    x_min, y_min = np.min(Xb[:, 0]), np.min(Xb[:, 1])
-    x_max, y_max = np.max(Xb[:, 0]), np.max(Xb[:, 1])
-    cx, cy = 0.5 * (x_min + x_max), 0.5 * (y_min + y_max)
-    w = (x_max - x_min)
-    h = (y_max - y_min)
-    half = 0.5 * max(w, h) * float(coupling.extent_factor)
-
-    xs = np.linspace(cx - half, cx + half, int(coupling.n_grid))
-    ys = np.linspace(cy - half, cy + half, int(coupling.n_grid))
-
-    # --- σ_total from DCE on grid (includes σ_applied + σ_crack)
-    plotter = DCEPlotterV4(res, out_dir=out_dir)
-    opts = StressPlotOptsV4(
-        extent_factor=1.0,
-        n_grid=int(coupling.n_grid),
-        add_remote=False,  # does NOT remove spatial applied; we subtract it explicitly below
-        mask_cracks=False,
-        cmap="jet",
-        n_bands=40,
-        label_contours=False,
-        vmax_factor=float(coupling.vmax_factor),
-        dpi=300,
-    )
-    plotter.plot_stress_components_global(
-        opts=opts,
-        components=("sxx", "syy", "sxy"),
-        grid=(xs, ys),
-        save_arrays=True,
-        arrays_prefix=coupling.arrays_prefix,
-        show=False,
-        save=bool(coupling.save_debug_crack_grid),
-    )
-
-    Sxx_tot = np.load(out_dir / f"{coupling.arrays_prefix}_sxx.npy")
-    Syy_tot = np.load(out_dir / f"{coupling.arrays_prefix}_syy.npy")
-    Sxy_tot = np.load(out_dir / f"{coupling.arrays_prefix}_sxy.npy")
-
-    # --- σ_applied from BEM grid -> interpolate onto (xs,ys)
-    xs_b = np.load(Path(bem_dir) / "xs.npy")
-    ys_b = np.load(Path(bem_dir) / "ys.npy")
-    Sxx_b = np.nan_to_num(np.load(Path(bem_dir) / "Sxx.npy"), nan=0.0)
-    Syy_b = np.nan_to_num(np.load(Path(bem_dir) / "Syy.npy"), nan=0.0)
-    Sxy_b = np.nan_to_num(np.load(Path(bem_dir) / "Sxy.npy"), nan=0.0)
-
-    Xg, Yg = np.meshgrid(xs, ys, indexing="xy")
-    pts_grid = np.column_stack([Xg.ravel(), Yg.ravel()])
-    Sxx_app = _interp_from_grid(xs_b, ys_b, Sxx_b, pts_grid).reshape(len(ys), len(xs))
-    Syy_app = _interp_from_grid(xs_b, ys_b, Syy_b, pts_grid).reshape(len(ys), len(xs))
-    Sxy_app = _interp_from_grid(xs_b, ys_b, Sxy_b, pts_grid).reshape(len(ys), len(xs))
-
-    # --- σ_crack = σ_total - σ_applied
-    Sxx_cr = Sxx_tot - Sxx_app
-    Syy_cr = Syy_tot - Syy_app
-    Sxy_cr = Sxy_tot - Sxy_app
-
-    # interpolate σ_crack at boundary points
-    sxx = _interp_from_grid(xs, ys, Sxx_cr, Xb)
-    syy = _interp_from_grid(xs, ys, Syy_cr, Xb)
-    sxy = _interp_from_grid(xs, ys, Sxy_cr, Xb)
+    sxx, syy, sxy = res.stress_field_global(xb, yb, add_remote=False)
+    sxx = np.nan_to_num(np.asarray(sxx, float), nan=0.0, posinf=0.0, neginf=0.0)
+    syy = np.nan_to_num(np.asarray(syy, float), nan=0.0, posinf=0.0, neginf=0.0)
+    sxy = np.nan_to_num(np.asarray(sxy, float), nan=0.0, posinf=0.0, neginf=0.0)
 
     nx = Nb[:, 0]
     ny = Nb[:, 1]
     tx_cr = sxx * nx + sxy * ny
     ty_cr = sxy * nx + syy * ny
 
+    if bool(getattr(coupling, "save_debug_crack_grid", True)):
+        np.save(out_dir / f"{coupling.arrays_prefix}_boundary_x.npy", xb)
+        np.save(out_dir / f"{coupling.arrays_prefix}_boundary_y.npy", yb)
+        np.save(out_dir / f"{coupling.arrays_prefix}_boundary_sxx.npy", sxx)
+        np.save(out_dir / f"{coupling.arrays_prefix}_boundary_syy.npy", syy)
+        np.save(out_dir / f"{coupling.arrays_prefix}_boundary_sxy.npy", sxy)
+        np.save(out_dir / f"{coupling.arrays_prefix}_boundary_tx.npy", tx_cr)
+        np.save(out_dir / f"{coupling.arrays_prefix}_boundary_ty.npy", ty_cr)
+
     return tx_cr, ty_cr
+
+
+def compute_crack_boundary_tractions_via_grid(
+    *,
+    res,
+    boundary_mesh,
+    bem_dir: Path,
+    out_dir: Path,
+    coupling: IterativeCouplingParams,
+):
+    """Backward-compatible alias.
+
+    The implementation is now direct point evaluation at boundary points.
+    """
+    return compute_crack_boundary_tractions_at_points(
+        res=res,
+        boundary_mesh=boundary_mesh,
+        bem_dir=bem_dir,
+        out_dir=out_dir,
+        coupling=coupling,
+    )
 
 
 def solve_bem_with_extra_boundary_tractions(

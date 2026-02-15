@@ -39,6 +39,7 @@ class CrackGrowthParams:
     max_cycles: int = 10
     vertex_high: int = 18
     L_limit_mm: float = 20.0
+    deformed_plot_scale: float = 5e3
 
     simplification_config: Optional[Dict] = None
 
@@ -103,6 +104,12 @@ def run_network_growth_uncoupled(
     params: CrackGrowthParams,
     plot_hook: Optional[Callable] = None,
 ):
+    def _hook_requests_stop(ret) -> bool:
+        if isinstance(ret, bool):
+            return bool(ret)
+        if isinstance(ret, dict):
+            return bool(ret.get("stop", False))
+        return False
 
     from preamble import (
         Material, AppliedStress, CrackNetworkV4,
@@ -187,7 +194,12 @@ def run_network_growth_uncoupled(
         _call(pl,"plot_network_graph")
 
         pl_def=DCEPlotterDeformedV4(res,out_dir=step_dir)
-        _call(pl_def,"plot_deformed_network",scale=5e1,trim_core_junction_faces=True)
+        _call(
+            pl_def,
+            "plot_deformed_network",
+            scale=float(getattr(params, "deformed_plot_scale", 5e3)),
+            trim_core_junction_faces=True,
+        )
 
         return res
 
@@ -195,11 +207,15 @@ def run_network_growth_uncoupled(
     step_dir=out_dir/"cycle_00_initial"
     step_dir.mkdir(parents=True,exist_ok=True)
     res=solve_only(net,step_dir)
-    if plot_hook: plot_hook("initial",res,step_dir)
+    stop_requested = False
+    if plot_hook:
+        stop_requested = _hook_requests_stop(plot_hook("initial",res,step_dir))
 
     global_step=0
 
     for cyc in range(1,params.max_cycles+1):
+        if stop_requested:
+            break
 
         # Growth loop
         while True:
@@ -214,7 +230,10 @@ def run_network_growth_uncoupled(
         step_dir=out_dir/f"cycle_{cyc:02d}_pre_simplify"
         step_dir.mkdir(parents=True,exist_ok=True)
         res=solve_only(net,step_dir)
-        if plot_hook: plot_hook(f"cycle_{cyc:02d}_pre_simplify",res,step_dir)
+        if plot_hook:
+            stop_requested = _hook_requests_stop(plot_hook(f"cycle_{cyc:02d}_pre_simplify",res,step_dir))
+            if stop_requested:
+                break
 
         # Intersection BEFORE simplify
         net=update_network_with_intersections(net,verbose=False)
@@ -234,7 +253,10 @@ def run_network_growth_uncoupled(
         step_dir=out_dir/f"cycle_{cyc:02d}_post_simplify"
         step_dir.mkdir(parents=True,exist_ok=True)
         res=solve_only(net,step_dir)
-        if plot_hook: plot_hook(f"cycle_{cyc:02d}_post_simplify",res,step_dir)
+        if plot_hook:
+            stop_requested = _hook_requests_stop(plot_hook(f"cycle_{cyc:02d}_post_simplify",res,step_dir))
+            if stop_requested:
+                break
 
     if plot_hook: plot_hook("final",res,step_dir)
     return res
