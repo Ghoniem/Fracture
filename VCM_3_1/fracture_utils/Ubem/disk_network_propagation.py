@@ -170,7 +170,7 @@ def run_network_growth_uncoupled(
                            toughness=tough,direction_law=dir_law)
 
     simp_cfg = SimplificationConfig(max_angle_deviation=3.0,
-                                    min_edge_length=0.5*mm,
+                                    min_edge_length=0.2*mm,
                                     remove_degree2_nodes=False,
                                     merge_at_degree2=True,
                                     merge_vertex_tolerance=1e-6,
