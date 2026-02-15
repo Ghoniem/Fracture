@@ -19,6 +19,13 @@ Index convention used here (standard):
 Stress is computed (for now) from numerical displacement gradients:
   ε = sym(∇u), σ = λ tr(ε) I + 2μ ε
 
+Unit convention
+---------------
+- Boundary tractions `t` are physical stresses in Pa (N/m^2).
+- Therefore recovered stresses are also in Pa directly from constitutive law.
+- Out-of-plane thickness `h` should be applied when converting total force to boundary
+  traction (e.g. p = P/(L*h)); it must NOT be applied again in stress recovery.
+
 Plane strain vs plane stress:
   - κ changes in the displacement kernel u* (via kappa_from_nu)
   - constitutive in-plane σxx,σyy,σxy uses standard (λ,μ) choices for each case.
@@ -35,7 +42,7 @@ from typing import List, Tuple, Optional
 # ----------------------------------------------------------------------
 # Material helper (Lamé parameters + Muskhelishvili κ)
 # ----------------------------------------------------------------------
-def _material(E: float, nu: float, h: float, plane_strain: bool = True):
+def _material(E: float, nu: float, plane_strain: bool = True):
     """Return (lambda, mu, kappa) for 2D elastostatics.
 
     - mu is the shear modulus (same for plane stress/strain).
@@ -376,9 +383,10 @@ def kelvin_dT_dfield(field: Tuple[float, float],
 # Solver
 # -----------------------------
 class BEMSolver2D:
-    def __init__(self, E: float, nu: float, h: float, plane_strain: bool = True):
+    def __init__(self, E: float, nu: float, h: float = 1.0, plane_strain: bool = True):
         self.E = float(E)
         self.nu = float(nu)
+        # Kept for compatibility and caller-side load conversion bookkeeping.
         self.h = float(h)
         self.plane_strain = bool(plane_strain)
 
@@ -630,19 +638,19 @@ class BEMSolver2D:
         eyy = duy_dy
         exy = 0.5 * (dux_dy + duy_dx)
 
-        E, nu, h = self.E, self.nu, self.h
+        E, nu = self.E, self.nu
 
         if self.plane_strain:
-            lam, mu, _ = _material(E, nu, h, plane_strain=True)
-            sxx = (2.0 * mu * exx + lam * (exx + eyy))/h
-            syy = (2.0 * mu * eyy + lam * (exx + eyy))/h
-            sxy = (2.0 * mu * exy)/h
+            lam, mu, _ = _material(E, nu, plane_strain=True)
+            sxx = (2.0 * mu * exx + lam * (exx + eyy))
+            syy = (2.0 * mu * eyy + lam * (exx + eyy))
+            sxy = (2.0 * mu * exy)
         else:
             # plane stress
             mu = shear_modulus(E, nu)
             fac = E / (1.0 - nu * nu)
-            sxx = (fac * (exx + nu * eyy))/h
-            syy = (fac * (eyy + nu * exx))/h
-            sxy = (2.0 * mu * exy)/h
+            sxx = (fac * (exx + nu * eyy))
+            syy = (fac * (eyy + nu * exx))
+            sxy = (2.0 * mu * exy)
 
         return float(sxx), float(syy), float(sxy)
