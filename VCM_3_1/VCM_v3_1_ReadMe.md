@@ -1,4 +1,4 @@
-# VCM v3.1: Implementation of Boundary Conditions via BEM Coupling with Crack Evolution (based on `bem_solver.py`)
+﻿# VCM v3.1: Implementation of Boundary Conditions via BEM Coupling with Crack Evolution (based on `bem_solver.py`)
 
 This note summarizes the **2‑D linear‑elastic boundary element method (BEM)** implemented in the attached solver and then describes, with equation‑level detail, how to incorporate **system (outer) boundary tractions and displacements** into **VCM crack‑network simulations (Version 3)** using:
 
@@ -69,24 +69,27 @@ c(\boldsymbol{\xi})\,\mathbf{u}(\boldsymbol{\xi})
 =\int_\Gamma \mathbf{U}(\boldsymbol{\xi},\mathbf{x})\,\mathbf{t}(\mathbf{x})\,d\Gamma(\mathbf{x}).
 $$
 
-In the attached code, the **singular/self term** is handled by inserting
+In the attached code, the **self term** is handled in two stages:
+
+- During quadrature assembly, the solver forms $\mathbf{G}_{ij}$ for all $(i,j)$ and forms only off-diagonal $\mathbf{H}_{ij}$ for $i\neq j$ (it skips direct numerical integration of $\mathbf{T}$ for $i=j$).
+
+- The diagonal block is then recovered by rigid-translation (row-sum) closure with $c=\tfrac{1}{2}$:
 $$
-c(\boldsymbol{\xi}) = -\frac{1}{2}
+\mathbf{H}_{ii}=-c\mathbf{I}-\sum_{j\neq i}\mathbf{H}_{ij},\qquad c=\frac{1}{2}.
 $$
-into the diagonal of the matrix labeled **H** when the collocation point is “near” the integrated element (heuristic singular detection). Concretely, for a collocation point on element $i$ and an integrated element $j$:
+After that, the matrix used in the mixed-BC assembly is:
+$$
+\mathbf{C}\!+\!\mathbf{H}=\mathbf{H}+c\mathbf{I}.
+$$
+
+Concretely, for a collocation point on element $i$ and an integrated element $j$:
 
 - The solver forms two element influence matrices:
 $$
 \mathbf{H}_{ij} \approx \int_{\Gamma_j}\mathbf{T}(\boldsymbol{\xi}_i,\mathbf{x};\mathbf{n})\,d\Gamma,\qquad
 \mathbf{G}_{ij} \approx \int_{\Gamma_j}\mathbf{U}(\boldsymbol{\xi}_i,\mathbf{x})\,d\Gamma,
 $$
-each $\in\mathbb{R}^{2\times 2}$, using midpoint Gauss integration on straight elements.
-
-- For “singular” ($i=j$) cases, it sets
-$$
-\mathbf{H}_{ii}\leftarrow -\frac{1}{2}\mathbf{I},\qquad
-\text{and skips numerically integrating }\mathbf{T}\text{ for that element.}
-$$
+each $\in\mathbb{R}^{2\times 2}$, using Gauss-Legendre quadrature on straight elements.
 
 The assembled discrete BIE is consistent with:
 $$
@@ -127,17 +130,15 @@ approximating the integrals by Gauss quadrature on each straight boundary elemen
 
 ### 1.5 Interior stress evaluation used by the solver
 
-The file computes stress by treating traction on each boundary element as a **distributed force**:
+The default stress path is derivative-based and consistent with the solved boundary fields.
+For an interior point $\mathbf{x}$, the solver first evaluates the displacement gradient using analytic derivatives of the kernels:
 $$
-d\mathbf{F}=\mathbf{t}\,d\Gamma,
+u_{i,k}(\mathbf{x})=\int_\Gamma U_{ij,k}(\mathbf{x},\mathbf{s})\,t_j(\mathbf{s})\,d\Gamma
+-\int_\Gamma T_{ij,k}(\mathbf{x},\mathbf{s})\,u_j(\mathbf{s})\,d\Gamma,
 $$
-and then accumulating stress at a field point via a **Kelvin point‑force stress formula**:
-$$
-\boldsymbol{\sigma}(\mathbf{x}) \approx \int_\Gamma \boldsymbol{\sigma}^{\text{Kelvin}}(\mathbf{x};\mathbf{s},d\mathbf{F}) .
-$$
+then forms small strain and applies the constitutive law (plane strain or plane stress) to obtain $(\sigma_{xx},\sigma_{yy},\sigma_{xy})$.
 
-> Note: this is a pragmatic stress post‑processor; it is not the full consistent BEM stress kernel evaluation (which would involve derivatives of $\mathbf{U}$ and/or hypersingular kernels). It is, however, sufficient for *boundary correction fields* and for traction recovery on $\Gamma$.
-
+An optional finite-difference mode (`fd` argument) is available as a diagnostic check, not the default path.
 ---
 
 ## 2) How VCM v3 will incorporate outer boundary conditions
