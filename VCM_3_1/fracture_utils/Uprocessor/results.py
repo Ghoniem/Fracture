@@ -591,17 +591,44 @@ class DCEResultsNetworkV4:
         for poly in self.sol.get("polyline_solutions", []):
             bI = np.asarray(poly["bI"], float)
             bII = np.asarray(poly["bII"], float)
-            xmid = np.asarray(poly["x_col"], float)
-            tmid = np.asarray(poly["t_col"], float)
-            nmid = np.asarray(poly["n_col"], float)
-            ds = np.asarray(poly["ds"], float)
+            panel_src = poly.get("panel_src", None)
+            src_pts = poly.get("src_pts", None)
+            src_t = poly.get("src_t", None)
+            src_n = poly.get("src_n", None)
+            src_w = poly.get("src_w", None)
 
-            for x0, t0, n0, bi, bii, w in zip(xmid, tmid, nmid, bI, bII, ds):
-                dB = (bii * t0 + bi * n0) * float(w)
-                dx = Xg - float(x0[0])
-                dy = Yg - float(x0[1])
-                a,b,c = stress_edge_dislocation(dx, dy, float(dB[0]), float(dB[1]), mu, nu)
-                sxx += a; syy += b; sxy += c
+            # Prefer distributed quadrature sources (solver-consistent, less spurious peaking).
+            if panel_src is not None and src_pts is not None and src_t is not None and src_n is not None and src_w is not None:
+                src_pts = np.asarray(src_pts, float)
+                src_t = np.asarray(src_t, float)
+                src_n = np.asarray(src_n, float)
+                src_w = np.asarray(src_w, float)
+                for k, (bi, bii) in enumerate(zip(bI, bII)):
+                    if k >= len(panel_src):
+                        break
+                    i0, i1 = panel_src[k]
+                    for x0, t0, n0, wq in zip(src_pts[i0:i1], src_t[i0:i1], src_n[i0:i1], src_w[i0:i1]):
+                        dB = (bii * t0 + bi * n0) * float(wq)
+                        dx = Xg - float(x0[0])
+                        dy = Yg - float(x0[1])
+                        a, b, c = stress_edge_dislocation(dx, dy, float(dB[0]), float(dB[1]), mu, nu)
+                        sxx += a
+                        syy += b
+                        sxy += c
+            else:
+                # Legacy midpoint approximation fallback.
+                xmid = np.asarray(poly["x_col"], float)
+                tmid = np.asarray(poly["t_col"], float)
+                nmid = np.asarray(poly["n_col"], float)
+                ds = np.asarray(poly["ds"], float)
+                for x0, t0, n0, bi, bii, w in zip(xmid, tmid, nmid, bI, bII, ds):
+                    dB = (bii * t0 + bi * n0) * float(w)
+                    dx = Xg - float(x0[0])
+                    dy = Yg - float(x0[1])
+                    a, b, c = stress_edge_dislocation(dx, dy, float(dB[0]), float(dB[1]), mu, nu)
+                    sxx += a
+                    syy += b
+                    sxy += c
 
         if add_remote:
             sig = applied_tensor(self.calc.applied)
@@ -643,17 +670,42 @@ class DCEResultsNetworkV4:
 
             bI = np.asarray(poly["bI"], float)
             bII = np.asarray(poly["bII"], float)
-            xmid = np.asarray(poly["x_col"], float)
-            tmid = np.asarray(poly["t_col"], float)
-            nmid = np.asarray(poly["n_col"], float)
-            ds = np.asarray(poly["ds"], float)
+            panel_src = poly.get("panel_src", None)
+            src_pts = poly.get("src_pts", None)
+            src_t = poly.get("src_t", None)
+            src_n = poly.get("src_n", None)
+            src_w = poly.get("src_w", None)
 
-            for x0, t0, n0, bi, bii, w in zip(xmid, tmid, nmid, bI, bII, ds):
-                dB = (bii * t0 + bi * n0) * float(w)
-                dx = Xg - float(x0[0])
-                dy = Yg - float(x0[1])
-                a, b, c = stress_edge_dislocation(dx, dy, float(dB[0]), float(dB[1]), mu, nu)
-                sxx += a; syy += b; sxy += c
+            if panel_src is not None and src_pts is not None and src_t is not None and src_n is not None and src_w is not None:
+                src_pts = np.asarray(src_pts, float)
+                src_t = np.asarray(src_t, float)
+                src_n = np.asarray(src_n, float)
+                src_w = np.asarray(src_w, float)
+                for k, (bi, bii) in enumerate(zip(bI, bII)):
+                    if k >= len(panel_src):
+                        break
+                    i0, i1 = panel_src[k]
+                    for x0, t0, n0, wq in zip(src_pts[i0:i1], src_t[i0:i1], src_n[i0:i1], src_w[i0:i1]):
+                        dB = (bii * t0 + bi * n0) * float(wq)
+                        dx = Xg - float(x0[0])
+                        dy = Yg - float(x0[1])
+                        a, b, c = stress_edge_dislocation(dx, dy, float(dB[0]), float(dB[1]), mu, nu)
+                        sxx += a
+                        syy += b
+                        sxy += c
+            else:
+                xmid = np.asarray(poly["x_col"], float)
+                tmid = np.asarray(poly["t_col"], float)
+                nmid = np.asarray(poly["n_col"], float)
+                ds = np.asarray(poly["ds"], float)
+                for x0, t0, n0, bi, bii, w in zip(xmid, tmid, nmid, bI, bII, ds):
+                    dB = (bii * t0 + bi * n0) * float(w)
+                    dx = Xg - float(x0[0])
+                    dy = Yg - float(x0[1])
+                    a, b, c = stress_edge_dislocation(dx, dy, float(dB[0]), float(dB[1]), mu, nu)
+                    sxx += a
+                    syy += b
+                    sxy += c
 
         if add_remote:
             sig = applied_tensor(self.calc.applied)
@@ -705,21 +757,46 @@ class DCEResultsNetworkV4:
         for p, poly in enumerate(self.sol.get("polyline_solutions", [])):
             bI = np.asarray(poly["bI"], float)
             bII = np.asarray(poly["bII"], float)
-            xmid = np.asarray(poly["x_col"], float)
-            tmid = np.asarray(poly["t_col"], float)
-            nmid = np.asarray(poly["n_col"], float)
-            ds = np.asarray(poly["ds"], float)
+            panel_src = poly.get("panel_src", None)
+            src_pts = poly.get("src_pts", None)
+            src_t = poly.get("src_t", None)
+            src_n = poly.get("src_n", None)
+            src_w = poly.get("src_w", None)
 
-            for j, (x0, t0, n0, bi, bii, w) in enumerate(zip(xmid, tmid, nmid, bI, bII, ds)):
-                if int(p) == pid and int(j) in skip:
-                    continue
-                dB = (bii * t0 + bi * n0) * float(w)
-                dx = Xg - float(x0[0])
-                dy = Yg - float(x0[1])
-                a, b, c = stress_edge_dislocation(dx, dy, float(dB[0]), float(dB[1]), mu, nu)
-                sxx += a
-                syy += b
-                sxy += c
+            if panel_src is not None and src_pts is not None and src_t is not None and src_n is not None and src_w is not None:
+                src_pts = np.asarray(src_pts, float)
+                src_t = np.asarray(src_t, float)
+                src_n = np.asarray(src_n, float)
+                src_w = np.asarray(src_w, float)
+                for j, (bi, bii) in enumerate(zip(bI, bII)):
+                    if int(p) == pid and int(j) in skip:
+                        continue
+                    if j >= len(panel_src):
+                        break
+                    i0, i1 = panel_src[j]
+                    for x0, t0, n0, wq in zip(src_pts[i0:i1], src_t[i0:i1], src_n[i0:i1], src_w[i0:i1]):
+                        dB = (bii * t0 + bi * n0) * float(wq)
+                        dx = Xg - float(x0[0])
+                        dy = Yg - float(x0[1])
+                        a, b, c = stress_edge_dislocation(dx, dy, float(dB[0]), float(dB[1]), mu, nu)
+                        sxx += a
+                        syy += b
+                        sxy += c
+            else:
+                xmid = np.asarray(poly["x_col"], float)
+                tmid = np.asarray(poly["t_col"], float)
+                nmid = np.asarray(poly["n_col"], float)
+                ds = np.asarray(poly["ds"], float)
+                for j, (x0, t0, n0, bi, bii, w) in enumerate(zip(xmid, tmid, nmid, bI, bII, ds)):
+                    if int(p) == pid and int(j) in skip:
+                        continue
+                    dB = (bii * t0 + bi * n0) * float(w)
+                    dx = Xg - float(x0[0])
+                    dy = Yg - float(x0[1])
+                    a, b, c = stress_edge_dislocation(dx, dy, float(dB[0]), float(dB[1]), mu, nu)
+                    sxx += a
+                    syy += b
+                    sxy += c
 
         if add_remote:
             sig = applied_tensor(self.calc.applied)
