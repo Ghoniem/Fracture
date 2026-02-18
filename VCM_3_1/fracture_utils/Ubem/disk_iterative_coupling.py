@@ -200,6 +200,43 @@ def compute_crack_boundary_tractions_via_grid(
     return tx_cr, ty_cr
 
 
+def compute_crack_boundary_tractions_direct(
+    *,
+    res,
+    boundary_mesh,
+):
+    """
+    Fast crack-only boundary traction extraction without building any grid.
+
+    This evaluates crack-induced stresses directly at boundary element midpoints
+    via DCEResultsNetworkV4.stress_field_global(..., add_remote=False), then maps:
+
+        t_cr = sigma_cr * n
+
+    Returns
+    -------
+    tx_cr, ty_cr : arrays of length n_boundary_elements, in Pa
+    """
+    # boundary sample points + normals
+    Xb, Nb = _disk_boundary_midpoints_normals(boundary_mesh)
+    nx = Nb[:, 0]
+    ny = Nb[:, 1]
+
+    # Crack-only stress (exclude applied/background field)
+    sxx, syy, sxy = res.stress_field_global(
+        Xb[:, 0],
+        Xb[:, 1],
+        add_remote=False,
+    )
+    sxx = np.asarray(sxx, float).reshape(-1)
+    syy = np.asarray(syy, float).reshape(-1)
+    sxy = np.asarray(sxy, float).reshape(-1)
+
+    tx_cr = sxx * nx + sxy * ny
+    ty_cr = sxy * nx + syy * ny
+    return tx_cr, ty_cr
+
+
 def solve_bem_with_extra_boundary_tractions(
     *,
     disk_params,

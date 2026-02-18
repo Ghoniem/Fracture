@@ -147,12 +147,30 @@ def run_network_growth_uncoupled(
         S[:,1,0]=Ixy(pts)
         return S
 
-    applied = AppliedStress(sigma_func=sigma_func)
-    material = Material(E=params.material_E,nu=params.material_nu,plane_stress=params.plane_stress)
+    solver_kwargs = dict(
+        ne_half=100,
+        representation="cheb_quad",
+        node_distribution="tip_dense",
+        solver_option="parametrized_crack",
+        parametrization="polyline",
+        nq_col=12,
+        nq_stress=16,
+        crack_mode="half",
+        junction_model="core",
+    )
+    if isinstance(params.solver_kwargs, dict):
+        solver_kwargs.update(params.solver_kwargs)
 
-    solver_kwargs = dict(ne_half=100,representation="cheb_quad",node_distribution="tip_dense",
-                         solver_option="parametrized_crack",parametrization="polyline",
-                         nq_col=12,nq_stress=16,crack_mode="half",junction_model="core")
+    # In true augmented coupling mode, the outer boundary load is enforced via
+    # KKT constraints (C_bem/C_bc). Using the BEM field as an additional
+    # "applied" stress can over-drive crack fields (double counting).
+    aug_active = isinstance(solver_kwargs.get("augmented_coupling", None), dict)
+    keep_bem_applied = bool(solver_kwargs.get("augmented_keep_bem_applied", True))
+    if aug_active and (not keep_bem_applied):
+        applied = AppliedStress(sigma_xx=0.0, sigma_yy=0.0, sigma_xy=0.0)
+    else:
+        applied = AppliedStress(sigma_func=sigma_func)
+    material = Material(E=params.material_E,nu=params.material_nu,plane_stress=params.plane_stress)
 
     cfg = PropagationConfig(f0=params.f0,f_fixed=params.f_fixed,
                             step_mode=params.step_mode,
@@ -179,8 +197,10 @@ def run_network_growth_uncoupled(
                                     preserve_junctions=True)
 
     def solve_only(network,step_dir):
+        print(f"[solve] start: {step_dir.name} (Nv={len(network.vertices)}, Ne={len(network.edges)})")
         calc=DCENetworkStaticV4(material,network,applied)
         sol=calc.solve(**solver_kwargs)
+        print(f"[solve] done : {step_dir.name}")
         res=DCEResultsNetworkV4(calc,sol)
 
         pl=DCEPlotterV4(res,out_dir=step_dir)
