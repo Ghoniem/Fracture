@@ -31,7 +31,7 @@ class IterativeCouplingParams:
     extent_factor: float = 1.0        # bbox scale relative to disk bbox
     n_grid: int = 401                 # higher -> better traction estimate
     vmax_factor: float = 2.0          # only for optional debug plots
-    save_debug_crack_grid: bool = True
+    save_debug_crack_grid: bool = False
     arrays_prefix: str = "crack_for_bem"
 
     # under-relaxation on BEM stress update (optional)
@@ -155,19 +155,30 @@ def compute_crack_boundary_tractions_via_grid(
         vmax_factor=float(coupling.vmax_factor),
         dpi=300,
     )
-    plotter.plot_stress_components_global(
-        opts=opts,
-        components=("sxx", "syy", "sxy"),
-        grid=(xs, ys),
-        save_arrays=True,
-        arrays_prefix=coupling.arrays_prefix,
-        show=False,
-        save=bool(coupling.save_debug_crack_grid),
-    )
-
-    Sxx_tot = np.load(out_dir / f"{coupling.arrays_prefix}_sxx.npy")
-    Syy_tot = np.load(out_dir / f"{coupling.arrays_prefix}_syy.npy")
-    Sxy_tot = np.load(out_dir / f"{coupling.arrays_prefix}_sxy.npy")
+    if coupling.save_debug_crack_grid:
+        plotter.plot_stress_components_global(
+            opts=opts,
+            components=("sxx", "syy", "sxy"),
+            grid=(xs, ys),
+            save_arrays=True,
+            arrays_prefix=coupling.arrays_prefix,
+            show=False,
+            save=True,
+        )
+        Sxx_tot = np.load(out_dir / f"{coupling.arrays_prefix}_sxx.npy")
+        Syy_tot = np.load(out_dir / f"{coupling.arrays_prefix}_syy.npy")
+        Sxy_tot = np.load(out_dir / f"{coupling.arrays_prefix}_sxy.npy")
+    else:
+        _, _, Sxx_tot, Syy_tot, Sxy_tot, _ = plotter.plot_stress_components_global(
+            opts=opts,
+            components=("sxx", "syy", "sxy"),
+            grid=(xs, ys),
+            save_arrays=False,
+            return_arrays=True,
+            arrays_prefix=coupling.arrays_prefix,
+            show=False,
+            save=False,
+        )
 
     # --- σ_applied from BEM grid -> interpolate onto (xs,ys)
     xs_b = np.load(Path(bem_dir) / "xs.npy")

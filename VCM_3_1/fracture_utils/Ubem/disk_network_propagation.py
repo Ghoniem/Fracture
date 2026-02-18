@@ -37,6 +37,7 @@ class CrackGrowthParams:
     min_pts: int = 8
 
     max_cycles: int = 10
+    max_increments_per_cycle: int | None = None
     vertex_high: int = 18
     L_limit_mm: float = 20.0
     deformed_plot_scale: float = 5e3
@@ -237,13 +238,18 @@ def run_network_growth_uncoupled(
         if stop_requested:
             break
 
+        increments_this_cycle = 0
+
         # Growth loop
         while True:
             result=prop.grow_one_increment(net)
             net=result.network_new
             grew=sum(1 for r in result.reports if bool(getattr(r,"grew",False)))
             global_step+=1
+            increments_this_cycle += 1
             if grew==0 or len(net.vertices)>=params.vertex_high:
+                break
+            if params.max_increments_per_cycle is not None and increments_this_cycle >= params.max_increments_per_cycle:
                 break
 
         # Pre-simplify
