@@ -20,8 +20,30 @@ import math
 
 
 def rotate_sifs(K_I, K_II, theta):
-    K_I_rot  = K_I * np.cos(theta/2)**2 - K_II * np.sin(theta)
-    K_II_rot = K_II * np.cos(theta) + 0.5 * K_I * np.sin(theta)
+    """
+    Rotate/kink SIFs for a crack extension angle ``theta`` (radians).
+
+    Uses the standard 2D LEFM kink-angle transformation:
+        K_I'  = C11*K_I + C12*K_II
+        K_II' = C21*K_I + C22*K_II
+    with
+        C11 = cos(theta/2)^3
+        C12 = -(3/2) * sin(theta) * cos(theta/2)
+        C21 = (1/2) * sin(theta) * cos(theta/2)
+        C22 = cos(theta/2) * (1 - 3*sin(theta/2)^2)
+    """
+    th = float(theta)
+    c2 = np.cos(th / 2.0)
+    s2 = np.sin(th / 2.0)
+    s = np.sin(th)
+
+    C11 = c2 ** 3
+    C12 = -1.5 * s * c2
+    C21 = 0.5 * s * c2
+    C22 = c2 * (1.0 - 3.0 * s2 * s2)
+
+    K_I_rot = C11 * K_I + C12 * K_II
+    K_II_rot = C21 * K_I + C22 * K_II
     return float(K_I_rot), float(K_II_rot)
 
 # -------------------------
