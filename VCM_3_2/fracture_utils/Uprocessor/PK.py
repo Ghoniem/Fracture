@@ -673,25 +673,31 @@ class PKProcessor:
             # Closed-form:
             #   theta = 2 * atan( (KI ± sqrt(KI^2 + 8 KII^2)) / (4 KII) )
             #
-            # Choose the root that maximizes hoop stress; practically:
-            #   use "+" sign in numerator when KII > 0 and "-" when KII < 0
-            # which is equivalent to:
-            #   theta = 2*atan( (KI + s*sqrt(KI^2+8KII^2)) / (4KII) ), with s = sign(KII)
+            # We evaluate both roots and choose the smaller-magnitude angle
+            # to avoid very sharp propagation kinks.
             #
-            s = 1.0 if KII >= 0.0 else -1.0
             disc = KI * KI + 8.0 * KII * KII
             root = math.sqrt(disc)
 
             denom = 4.0 * KII
-            # robust ratio
-            ratio = (KI + s * root) / (denom if abs(denom) > eps else (eps if denom >= 0 else -eps))
-            theta = 2.0 * math.atan(ratio)
+            if abs(denom) <= eps:
+                denom = eps if denom >= 0 else -eps
+
+            theta_plus = 2.0 * math.atan((KI + root) / denom)
+            theta_minus = 2.0 * math.atan((KI - root) / denom)
 
             # Map to principal range [-pi, pi] for stability
-            if theta > math.pi:
-                theta -= 2.0 * math.pi
-            if theta < -math.pi:
-                theta += 2.0 * math.pi
+            if theta_plus > math.pi:
+                theta_plus -= 2.0 * math.pi
+            if theta_plus < -math.pi:
+                theta_plus += 2.0 * math.pi
+            if theta_minus > math.pi:
+                theta_minus -= 2.0 * math.pi
+            if theta_minus < -math.pi:
+                theta_minus += 2.0 * math.pi
+
+            # Choose smallest-magnitude root to avoid sharp kink jumps.
+            theta = theta_plus if abs(theta_plus) <= abs(theta_minus) else theta_minus
 
             return math.degrees(theta) if return_degrees else theta
 

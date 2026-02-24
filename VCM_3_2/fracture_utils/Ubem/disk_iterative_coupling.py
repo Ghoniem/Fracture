@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 
@@ -243,6 +243,7 @@ def solve_bem_with_extra_boundary_tractions(
     bem_dir: Path,
     tx_extra: np.ndarray,
     ty_extra: np.ndarray,
+    gauss_n: Optional[int] = None,
     show: bool = False,
 ):
     """
@@ -250,6 +251,11 @@ def solve_bem_with_extra_boundary_tractions(
 
     IMPORTANT:
       To "reverse" crack tractions, pass tx_extra = -tx_crack, ty_extra = -ty_crack.
+
+    Parameters
+    ----------
+    gauss_n : int | None
+        Quadrature order for BEM solve. If None, uses disk_params.gauss_n (fallback 4).
 
     Overwrites the standard arrays in bem_dir:
       xs.npy, ys.npy, Sxx.npy, Syy.npy, Sxy.npy
@@ -299,7 +305,8 @@ def solve_bem_with_extra_boundary_tractions(
 
     solver = BEMSolver2D(E=disk_params.E, nu=disk_params.nu, h=getattr(disk_params, "h", 1.0), plane_strain=True)
     add_boundary_to_solver(solver, mesh, is_traction, bc_x, bc_y)
-    solver.solve(gauss_n=4)
+    gauss_n_eff = int(getattr(disk_params, "gauss_n", 4)) if gauss_n is None else int(gauss_n)
+    solver.solve(gauss_n=gauss_n_eff)
 
     # Save updated stress grid (overwrite standard arrays)
     R = float(disk_params.R)
