@@ -31,6 +31,13 @@ class MaximumHoopStressLaw:
       you may want to suppress growth upstream.
     """
 
+    @staticmethod
+    def _wrap_pi(theta: float) -> float:
+        """Wrap angle to [-pi, pi]."""
+        twopi = 2.0 * np.pi
+        th = (float(theta) + np.pi) % twopi - np.pi
+        return float(th)
+
     def theta(self, KI: float, KII: float) -> float:
         KI = float(KI)
         KII = float(KII)
@@ -42,6 +49,12 @@ class MaximumHoopStressLaw:
             return 0.0
 
         disc = KI * KI + 8.0 * KII * KII
-        num = KI - float(np.sqrt(disc))
+        root = float(np.sqrt(disc))
         den = 4.0 * KII
-        return 2.0 * float(np.arctan2(num, den))
+
+        # Eq. gives two branches:
+        #   theta = 2*atan( (KI ± sqrt(KI^2 + 8*KII^2)) / (4*KII) )
+        # Choose the smaller-magnitude angle to avoid sharp kink jumps.
+        th_plus = self._wrap_pi(2.0 * float(np.arctan2(KI + root, den)))
+        th_minus = self._wrap_pi(2.0 * float(np.arctan2(KI - root, den)))
+        return th_plus if abs(th_plus) <= abs(th_minus) else th_minus
