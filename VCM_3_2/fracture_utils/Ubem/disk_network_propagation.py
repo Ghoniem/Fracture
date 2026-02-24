@@ -187,14 +187,19 @@ def run_network_growth_uncoupled(
     prop = CrackPropagator(cfg=cfg,evaluator=evaluator,
                            toughness=tough,direction_law=dir_law)
 
-    simp_cfg = SimplificationConfig(max_angle_deviation=3.0,
-                                    min_edge_length=0.2*mm,
-                                    remove_degree2_nodes=False,
-                                    merge_at_degree2=True,
-                                    merge_vertex_tolerance=1e-6,
-                                    max_merged_edge_length=5*mm,
-                                    preserve_tips=True,
-                                    preserve_junctions=True)
+    simp_cfg_defaults = dict(
+        max_angle_deviation=3.0,
+        min_edge_length=0.2 * mm,
+        remove_degree2_nodes=False,
+        merge_at_degree2=True,
+        merge_vertex_tolerance=1e-6,
+        max_merged_edge_length=5 * mm,
+        preserve_tips=True,
+        preserve_junctions=True,
+    )
+    if isinstance(params.simplification_config, dict):
+        simp_cfg_defaults.update(params.simplification_config)
+    simp_cfg = SimplificationConfig(**simp_cfg_defaults)
 
     def solve_only(network,step_dir):
         print(f"[solve] start: {step_dir.name} (Nv={len(network.vertices)}, Ne={len(network.edges)})")
