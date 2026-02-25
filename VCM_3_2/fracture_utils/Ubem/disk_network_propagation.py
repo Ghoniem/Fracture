@@ -39,6 +39,8 @@ class CrackGrowthParams:
     max_cycles: int = 10
     vertex_high: int = 18
     L_limit_mm: float = 20.0
+    enable_inner_cycle_plot_save: bool = True
+    deformed_network_scale: float = 50.0
 
     simplification_config: Optional[Dict] = None
 
@@ -113,6 +115,7 @@ def run_network_growth_uncoupled(
         _call,
     )
     from fracture_utils.Ugenerator.crack_network_simplifier import CrackNetworkSimplifier, SimplificationConfig
+    from fracture_utils.Upropagation.network_ops import get_netops
 
     mm = 1e-3
     out_dir = Path(out_dir)
@@ -186,6 +189,69 @@ def run_network_growth_uncoupled(
 
     prop = CrackPropagator(cfg=cfg,evaluator=evaluator,
                            toughness=tough,direction_law=dir_law)
+    netops = get_netops()
+    tip_history = []
+
+    def _append_tip_history_row(*, phase, outer_cycle, inner_step, global_step, tip_vid, x_tip_m, y_tip_m, KI, KII):
+        tip_history.append({
+            "phase": str(phase),
+            "outer_cycle": int(outer_cycle),
+            "inner_step": int(inner_step),
+            "global_step": int(global_step),
+            "tip_vid": int(tip_vid),
+            "x_tip_m": float(x_tip_m),
+            "y_tip_m": float(y_tip_m),
+            "KI_MPa_sqrt_m": float(KI) * 1e-6,
+            "KII_MPa_sqrt_m": float(KII) * 1e-6,
+        })
+
+    def _record_inner_step_reports(network_before_growth, reports, *, outer_cycle, inner_step, global_step):
+        if not reports:
+            return
+        vid_to_xy = {
+            int(getattr(v, "id")): (float(getattr(v, "x")), float(getattr(v, "y")))
+            for v in getattr(network_before_growth, "vertices", [])
+        }
+        for rep in reports:
+            vid = int(getattr(rep, "tip_vid", -1))
+            xy = vid_to_xy.get(vid, (np.nan, np.nan))
+            _append_tip_history_row(
+                phase="inner_step",
+                outer_cycle=outer_cycle,
+                inner_step=inner_step,
+                global_step=global_step,
+                tip_vid=vid,
+                x_tip_m=xy[0],
+                y_tip_m=xy[1],
+                KI=float(getattr(rep, "KI", np.nan)),
+                KII=float(getattr(rep, "KII", np.nan)),
+            )
+
+    def _record_tip_snapshot(network_state, res_state, *, phase, outer_cycle, inner_step, global_step):
+        deg = netops.degree_map(network_state)
+        polylines = netops.extract_open_polylines(network_state)
+        tips = netops.extract_deg1_tips(network_state, polylines, deg) or []
+        for tip in tips:
+            vid = int(getattr(tip, "v_tip", -1))
+            x_tip, y_tip = np.asarray(getattr(tip, "x_tip"), float).reshape(2,)
+            try:
+                tev = evaluator.eval_tip(res_state, tip)
+                KI = float(getattr(tev, "KI", np.nan))
+                KII = float(getattr(tev, "KII", np.nan))
+            except Exception:
+                KI = np.nan
+                KII = np.nan
+            _append_tip_history_row(
+                phase=phase,
+                outer_cycle=outer_cycle,
+                inner_step=inner_step,
+                global_step=global_step,
+                tip_vid=vid,
+                x_tip_m=x_tip,
+                y_tip_m=y_tip,
+                KI=KI,
+                KII=KII,
+            )
 
     simp_cfg_defaults = dict(
         max_angle_deviation=3.0,
@@ -201,34 +267,53 @@ def run_network_growth_uncoupled(
         simp_cfg_defaults.update(params.simplification_config)
     simp_cfg = SimplificationConfig(**simp_cfg_defaults)
 
-    def solve_only(network,step_dir):
+    def solve_only(network,step_dir,save_inner_outputs=True):
         print(f"[solve] start: {step_dir.name} (Nv={len(network.vertices)}, Ne={len(network.edges)})")
         calc=DCENetworkStaticV4(material,network,applied)
         sol=calc.solve(**solver_kwargs)
         print(f"[solve] done : {step_dir.name}")
         res=DCEResultsNetworkV4(calc,sol)
 
-        pl=DCEPlotterV4(res,out_dir=step_dir)
-        _call(pl,"plot_network_graph")
+        if save_inner_outputs:
+            pl=DCEPlotterV4(res,out_dir=step_dir)
+            _call(pl,"plot_network_graph")
 
-        pl_def=DCEPlotterDeformedV4(res,out_dir=step_dir)
-        _call(pl_def,"plot_deformed_network",scale=5e1,trim_core_junction_faces=True)
+            pl_def=DCEPlotterDeformedV4(res,out_dir=step_dir)
+            _call(
+                pl_def,
+                "plot_deformed_network",
+                scale=float(getattr(params, "deformed_network_scale", 50.0)),
+                trim_core_junction_faces=True,
+            )
 
         return res
+
+    global_step=0
+    last_outer_cycle = 0
 
     # INITIAL
     step_dir=out_dir/"cycle_00_initial"
     step_dir.mkdir(parents=True,exist_ok=True)
     res=solve_only(net,step_dir)
     if plot_hook: plot_hook("initial",res,step_dir)
-
-    global_step=0
+    _record_tip_snapshot(net, res, phase="initial", outer_cycle=0, inner_step=0, global_step=global_step)
 
     for cyc in range(1,params.max_cycles+1):
+        last_outer_cycle = int(cyc)
+        inner_step = 0
 
         # Growth loop
         while True:
-            result=prop.grow_one_increment(net)
+            net_before_growth = net
+            result=prop.grow_one_increment(net_before_growth)
+            inner_step += 1
+            _record_inner_step_reports(
+                net_before_growth,
+                result.reports,
+                outer_cycle=cyc,
+                inner_step=inner_step,
+                global_step=global_step + 1,
+            )
             net=result.network_new
             grew=sum(1 for r in result.reports if bool(getattr(r,"grew",False)))
             global_step+=1
@@ -238,8 +323,9 @@ def run_network_growth_uncoupled(
         # Pre-simplify
         step_dir=out_dir/f"cycle_{cyc:02d}_pre_simplify"
         step_dir.mkdir(parents=True,exist_ok=True)
-        res=solve_only(net,step_dir)
+        res=solve_only(net,step_dir,save_inner_outputs=bool(params.enable_inner_cycle_plot_save))
         if plot_hook: plot_hook(f"cycle_{cyc:02d}_pre_simplify",res,step_dir)
+        _record_tip_snapshot(net, res, phase="outer_pre_simplify", outer_cycle=cyc, inner_step=inner_step, global_step=global_step)
 
         # Intersection BEFORE simplify
         net=update_network_with_intersections(net,verbose=False)
@@ -258,8 +344,27 @@ def run_network_growth_uncoupled(
         # Post-simplify
         step_dir=out_dir/f"cycle_{cyc:02d}_post_simplify"
         step_dir.mkdir(parents=True,exist_ok=True)
-        res=solve_only(net,step_dir)
+        res=solve_only(net,step_dir,save_inner_outputs=bool(params.enable_inner_cycle_plot_save))
         if plot_hook: plot_hook(f"cycle_{cyc:02d}_post_simplify",res,step_dir)
+        _record_tip_snapshot(net, res, phase="outer_post_simplify", outer_cycle=cyc, inner_step=inner_step, global_step=global_step)
 
     if plot_hook: plot_hook("final",res,step_dir)
+    _record_tip_snapshot(net, res, phase="final", outer_cycle=last_outer_cycle, inner_step=0, global_step=global_step)
+
+    # Persist per-run tip history arrays for downstream aggregation.
+    if tip_history:
+        np.savez(
+            out_dir / "tip_history.npz",
+            x_tip_m=np.asarray([r["x_tip_m"] for r in tip_history], float),
+            y_tip_m=np.asarray([r["y_tip_m"] for r in tip_history], float),
+            KI_MPa_sqrt_m=np.asarray([r["KI_MPa_sqrt_m"] for r in tip_history], float),
+            KII_MPa_sqrt_m=np.asarray([r["KII_MPa_sqrt_m"] for r in tip_history], float),
+            phase=np.asarray([r["phase"] for r in tip_history], dtype=str),
+            outer_cycle=np.asarray([r["outer_cycle"] for r in tip_history], int),
+            inner_step=np.asarray([r["inner_step"] for r in tip_history], int),
+            global_step=np.asarray([r["global_step"] for r in tip_history], int),
+            tip_vid=np.asarray([r["tip_vid"] for r in tip_history], int),
+        )
+
+    setattr(res, "tip_history", tip_history)
     return res
