@@ -38,6 +38,13 @@ class MaximumHoopStressLaw:
         th = (float(theta) + np.pi) % twopi - np.pi
         return float(th)
 
+    @staticmethod
+    def _sigma_theta(KI: float, KII: float, theta: float) -> float:
+        """Circumferential stress factor at angle theta (up to common positive scale)."""
+        c = float(np.cos(0.5 * float(theta)))
+        s = float(np.sin(0.5 * float(theta)))
+        return float(KI * (c ** 3) - 3.0 * KII * s * (c ** 2))
+
     def theta(self, KI: float, KII: float) -> float:
         KI = float(KI)
         KII = float(KII)
@@ -52,9 +59,18 @@ class MaximumHoopStressLaw:
         root = float(np.sqrt(disc))
         den = 4.0 * KII
 
-        # Eq. gives two branches:
+        # Eq. gives two stationary-angle branches:
         #   theta = 2*atan( (KI ± sqrt(KI^2 + 8*KII^2)) / (4*KII) )
-        # Choose the smaller-magnitude angle to avoid sharp kink jumps.
+        # Select the branch that maximizes hoop stress (MTS criterion).
+        # This avoids wrong-turn branch picks when KI is negative.
         th_plus = self._wrap_pi(2.0 * float(np.arctan2(KI + root, den)))
         th_minus = self._wrap_pi(2.0 * float(np.arctan2(KI - root, den)))
+        s_plus = self._sigma_theta(KI, KII, th_plus)
+        s_minus = self._sigma_theta(KI, KII, th_minus)
+
+        if s_plus > s_minus:
+            return th_plus
+        if s_minus > s_plus:
+            return th_minus
+        # Tie-breaker: preserve smooth/compact branch where equivalent.
         return th_plus if abs(th_plus) <= abs(th_minus) else th_minus
