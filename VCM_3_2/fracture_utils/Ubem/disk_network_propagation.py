@@ -192,7 +192,21 @@ def run_network_growth_uncoupled(
     netops = get_netops()
     tip_history = []
 
-    def _append_tip_history_row(*, phase, outer_cycle, inner_step, global_step, tip_vid, x_tip_m, y_tip_m, KI, KII):
+    def _append_tip_history_row(
+        *,
+        phase,
+        outer_cycle,
+        inner_step,
+        global_step,
+        tip_vid,
+        x_tip_m,
+        y_tip_m,
+        KI,
+        KII,
+        theta_rad=np.nan,
+        grew=False,
+        reason="",
+    ):
         tip_history.append({
             "phase": str(phase),
             "outer_cycle": int(outer_cycle),
@@ -203,6 +217,10 @@ def run_network_growth_uncoupled(
             "y_tip_m": float(y_tip_m),
             "KI_MPa_sqrt_m": float(KI) * 1e-6,
             "KII_MPa_sqrt_m": float(KII) * 1e-6,
+            "theta_rad": float(theta_rad),
+            "theta_deg": float(np.degrees(theta_rad)) if np.isfinite(theta_rad) else np.nan,
+            "grew": bool(grew),
+            "reason": str(reason),
         })
 
     def _record_inner_step_reports(network_before_growth, reports, *, outer_cycle, inner_step, global_step):
@@ -225,6 +243,9 @@ def run_network_growth_uncoupled(
                 y_tip_m=xy[1],
                 KI=float(getattr(rep, "KI", np.nan)),
                 KII=float(getattr(rep, "KII", np.nan)),
+                theta_rad=float(getattr(rep, "theta", np.nan)),
+                grew=bool(getattr(rep, "grew", False)),
+                reason=str(getattr(rep, "reason", "")),
             )
 
     def _record_tip_snapshot(network_state, res_state, *, phase, outer_cycle, inner_step, global_step):
@@ -251,6 +272,9 @@ def run_network_growth_uncoupled(
                 y_tip_m=y_tip,
                 KI=KI,
                 KII=KII,
+                theta_rad=np.nan,
+                grew=False,
+                reason="snapshot",
             )
 
     simp_cfg_defaults = dict(
@@ -359,6 +383,10 @@ def run_network_growth_uncoupled(
             y_tip_m=np.asarray([r["y_tip_m"] for r in tip_history], float),
             KI_MPa_sqrt_m=np.asarray([r["KI_MPa_sqrt_m"] for r in tip_history], float),
             KII_MPa_sqrt_m=np.asarray([r["KII_MPa_sqrt_m"] for r in tip_history], float),
+            theta_rad=np.asarray([r.get("theta_rad", np.nan) for r in tip_history], float),
+            theta_deg=np.asarray([r.get("theta_deg", np.nan) for r in tip_history], float),
+            grew=np.asarray([bool(r.get("grew", False)) for r in tip_history], bool),
+            reason=np.asarray([r.get("reason", "") for r in tip_history], dtype=str),
             phase=np.asarray([r["phase"] for r in tip_history], dtype=str),
             outer_cycle=np.asarray([r["outer_cycle"] for r in tip_history], int),
             inner_step=np.asarray([r["inner_step"] for r in tip_history], int),
