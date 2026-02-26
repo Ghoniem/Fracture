@@ -192,6 +192,14 @@ def run_network_growth_uncoupled(
     netops = get_netops()
     tip_history = []
 
+    def _total_network_length(network_state) -> float:
+        total = 0.0
+        for e in getattr(network_state, "edges", []):
+            p0 = np.asarray(network_state.vertex_coords(int(e.v0)), float).reshape(2,)
+            p1 = np.asarray(network_state.vertex_coords(int(e.v1)), float).reshape(2,)
+            total += float(np.linalg.norm(p1 - p0))
+        return float(total)
+
     def _append_tip_history_row(
         *,
         phase,
@@ -206,6 +214,8 @@ def run_network_growth_uncoupled(
         theta_rad=np.nan,
         grew=False,
         reason="",
+        delta_a_m=np.nan,
+        total_length_m=np.nan,
     ):
         tip_history.append({
             "phase": str(phase),
@@ -221,11 +231,19 @@ def run_network_growth_uncoupled(
             "theta_deg": float(np.degrees(theta_rad)) if np.isfinite(theta_rad) else np.nan,
             "grew": bool(grew),
             "reason": str(reason),
+            "delta_a_m": float(delta_a_m),
+            "total_length_m": float(total_length_m),
         })
 
     def _record_inner_step_reports(network_before_growth, reports, *, outer_cycle, inner_step, global_step):
         if not reports:
             return
+        base_length_m = _total_network_length(network_before_growth)
+        total_growth_m = 0.0
+        for rep in reports:
+            if bool(getattr(rep, "grew", False)):
+                total_growth_m += float(getattr(rep, "delta_a", 0.0))
+        length_after_step_m = float(base_length_m + total_growth_m)
         vid_to_xy = {
             int(getattr(v, "id")): (float(getattr(v, "x")), float(getattr(v, "y")))
             for v in getattr(network_before_growth, "vertices", [])
@@ -233,6 +251,7 @@ def run_network_growth_uncoupled(
         for rep in reports:
             vid = int(getattr(rep, "tip_vid", -1))
             xy = vid_to_xy.get(vid, (np.nan, np.nan))
+            grew_i = bool(getattr(rep, "grew", False))
             _append_tip_history_row(
                 phase="inner_step",
                 outer_cycle=outer_cycle,
@@ -244,14 +263,17 @@ def run_network_growth_uncoupled(
                 KI=float(getattr(rep, "KI", np.nan)),
                 KII=float(getattr(rep, "KII", np.nan)),
                 theta_rad=float(getattr(rep, "theta", np.nan)),
-                grew=bool(getattr(rep, "grew", False)),
+                grew=grew_i,
                 reason=str(getattr(rep, "reason", "")),
+                delta_a_m=float(getattr(rep, "delta_a", 0.0)) if grew_i else 0.0,
+                total_length_m=length_after_step_m,
             )
 
     def _record_tip_snapshot(network_state, res_state, *, phase, outer_cycle, inner_step, global_step):
         deg = netops.degree_map(network_state)
         polylines = netops.extract_open_polylines(network_state)
         tips = netops.extract_deg1_tips(network_state, polylines, deg) or []
+        total_length_m = _total_network_length(network_state)
         for tip in tips:
             vid = int(getattr(tip, "v_tip", -1))
             x_tip, y_tip = np.asarray(getattr(tip, "x_tip"), float).reshape(2,)
@@ -275,6 +297,8 @@ def run_network_growth_uncoupled(
                 theta_rad=np.nan,
                 grew=False,
                 reason="snapshot",
+                delta_a_m=np.nan,
+                total_length_m=total_length_m,
             )
 
     simp_cfg_defaults = dict(
@@ -387,6 +411,8 @@ def run_network_growth_uncoupled(
             theta_deg=np.asarray([r.get("theta_deg", np.nan) for r in tip_history], float),
             grew=np.asarray([bool(r.get("grew", False)) for r in tip_history], bool),
             reason=np.asarray([r.get("reason", "") for r in tip_history], dtype=str),
+            delta_a_m=np.asarray([r.get("delta_a_m", np.nan) for r in tip_history], float),
+            total_length_m=np.asarray([r.get("total_length_m", np.nan) for r in tip_history], float),
             phase=np.asarray([r["phase"] for r in tip_history], dtype=str),
             outer_cycle=np.asarray([r["outer_cycle"] for r in tip_history], int),
             inner_step=np.asarray([r["inner_step"] for r in tip_history], int),
