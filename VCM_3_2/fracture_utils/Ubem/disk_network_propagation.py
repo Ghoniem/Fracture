@@ -43,6 +43,9 @@ class CrackGrowthParams:
     deformed_network_scale: float = 50.0
 
     simplification_config: Optional[Dict] = None
+    intersection_detect_mode: str = "single_pass"
+    intersection_verbose: bool = False
+    simplify_each_step: bool = True
 
 
 # ============================================================
@@ -341,36 +344,70 @@ def run_network_growth_uncoupled(
             net=result.network_new
             grew=sum(1 for r in result.reports if bool(getattr(r,"grew",False)))
             global_step+=1
+            # Enforce intersections + prune small segments after each inner step
+            net=update_network_with_intersections(
+                net,
+                detect_mode=params.intersection_detect_mode,
+                verbose=params.intersection_verbose,
+            )
+            simplifier=CrackNetworkSimplifier(config=simp_cfg)
+            V=np.array([[int(v.id),v.x,v.y] for v in net.vertices],float)
+            C=np.array([[int(e.v0),int(e.v1)] for e in net.edges],int)
+            simplifier.load_from_arrays(V,C)
+            simplifier.simplify(verbose=False)
+            V2,C2=simplifier.to_arrays()
+
+            net=CrackNetworkV4.from_vertices_connectivity(
+                vertices=V2,connectivity=C2,Nv_max=4,validate=True)
             if grew==0 or len(net.vertices)>=params.vertex_high:
                 break
 
-        # Pre-simplify
+        # Pre-simplify (or post-step) visualization
         step_dir=out_dir/f"cycle_{cyc:02d}_pre_simplify"
         step_dir.mkdir(parents=True,exist_ok=True)
         res=solve_only(net,step_dir,save_inner_outputs=bool(params.enable_inner_cycle_plot_save))
         if plot_hook: plot_hook(f"cycle_{cyc:02d}_pre_simplify",res,step_dir)
         _record_tip_snapshot(net, res, phase="outer_pre_simplify", outer_cycle=cyc, inner_step=inner_step, global_step=global_step)
 
-        # Intersection BEFORE simplify
-        net=update_network_with_intersections(net,verbose=False)
+        if not params.simplify_each_step:
+            # Intersection BEFORE simplify
+            net=update_network_with_intersections(
+                net,
+                detect_mode=params.intersection_detect_mode,
+                verbose=params.intersection_verbose,
+            )
 
-        # Simplify
-        simplifier=CrackNetworkSimplifier(config=simp_cfg)
-        V=np.array([[int(v.id),v.x,v.y] for v in net.vertices],float)
-        C=np.array([[int(e.v0),int(e.v1)] for e in net.edges],int)
-        simplifier.load_from_arrays(V,C)
-        simplifier.simplify(verbose=False)
-        V2,C2=simplifier.to_arrays()
+            # Simplify
+            simplifier=CrackNetworkSimplifier(config=simp_cfg)
+            V=np.array([[int(v.id),v.x,v.y] for v in net.vertices],float)
+            C=np.array([[int(e.v0),int(e.v1)] for e in net.edges],int)
+            simplifier.load_from_arrays(V,C)
+            simplifier.simplify(verbose=False)
+            V2,C2=simplifier.to_arrays()
 
-        net=CrackNetworkV4.from_vertices_connectivity(
-            vertices=V2,connectivity=C2,Nv_max=4,validate=True)
+            net=CrackNetworkV4.from_vertices_connectivity(
+                vertices=V2,connectivity=C2,Nv_max=4,validate=True)
 
+<<<<<<< Updated upstream
         # Post-simplify
         step_dir=out_dir/f"cycle_{cyc:02d}_post_simplify"
         step_dir.mkdir(parents=True,exist_ok=True)
         res=solve_only(net,step_dir,save_inner_outputs=bool(params.enable_inner_cycle_plot_save))
         if plot_hook: plot_hook(f"cycle_{cyc:02d}_post_simplify",res,step_dir)
         _record_tip_snapshot(net, res, phase="outer_post_simplify", outer_cycle=cyc, inner_step=inner_step, global_step=global_step)
+=======
+            # Post-simplify
+            step_dir=out_dir/f"cycle_{cyc:02d}_post_simplify"
+            step_dir.mkdir(parents=True,exist_ok=True)
+            res=solve_only(net,step_dir)
+            if plot_hook: plot_hook(f"cycle_{cyc:02d}_post_simplify",res,step_dir)
+        else:
+            # Still emit the post_simplify stage using the per-step-simplified net
+            step_dir=out_dir/f"cycle_{cyc:02d}_post_simplify"
+            step_dir.mkdir(parents=True,exist_ok=True)
+            res=solve_only(net,step_dir)
+            if plot_hook: plot_hook(f"cycle_{cyc:02d}_post_simplify",res,step_dir)
+>>>>>>> Stashed changes
 
     if plot_hook: plot_hook("final",res,step_dir)
     _record_tip_snapshot(net, res, phase="final", outer_cycle=last_outer_cycle, inner_step=0, global_step=global_step)
