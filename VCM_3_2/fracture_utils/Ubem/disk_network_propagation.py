@@ -389,6 +389,7 @@ def run_network_growth_uncoupled(
                 vertices=V2,connectivity=C2,Nv_max=4,validate=True)
 
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
         # Post-simplify
         step_dir=out_dir/f"cycle_{cyc:02d}_post_simplify"
         step_dir.mkdir(parents=True,exist_ok=True)
@@ -396,6 +397,8 @@ def run_network_growth_uncoupled(
         if plot_hook: plot_hook(f"cycle_{cyc:02d}_post_simplify",res,step_dir)
         _record_tip_snapshot(net, res, phase="outer_post_simplify", outer_cycle=cyc, inner_step=inner_step, global_step=global_step)
 =======
+=======
+>>>>>>> Stashed changes
             # Post-simplify
             step_dir=out_dir/f"cycle_{cyc:02d}_post_simplify"
             step_dir.mkdir(parents=True,exist_ok=True)
@@ -407,6 +410,9 @@ def run_network_growth_uncoupled(
             step_dir.mkdir(parents=True,exist_ok=True)
             res=solve_only(net,step_dir)
             if plot_hook: plot_hook(f"cycle_{cyc:02d}_post_simplify",res,step_dir)
+<<<<<<< Updated upstream
+>>>>>>> Stashed changes
+=======
 >>>>>>> Stashed changes
 
     if plot_hook: plot_hook("final",res,step_dir)
