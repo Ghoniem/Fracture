@@ -68,6 +68,11 @@ class CrackGrowthParams:
     compliance_evaluator: Optional[Callable[..., float]] = None
     check_tip_outside_disk: bool = False
     tip_outside_tolerance_m: float = 0.0
+    tip_outside_stop_mode: str = "any"  # "any" or "all"
+    stop_on_alpha_stabilization: bool = False
+    alpha_rel_change_threshold: float = 0.10
+    alpha_rel_change_ref_floor: float = 1e-12
+    stop_on_all_keff_below_kc: bool = False
 
 
 # ============================================================
@@ -360,12 +365,23 @@ def run_network_growth_uncoupled(
             K_eff_min_MPa_sqrt_m=float(keff_min),
             n_tip_reports=int(n_tips_eval),
         )
+        if inner_cycle_rows:
+            alpha_prev = float(inner_cycle_rows[-1].get("alpha", np.nan))
+            alpha_curr = float(row.get("alpha", np.nan))
+            if np.isfinite(alpha_prev) and np.isfinite(alpha_curr):
+                denom = max(abs(alpha_prev), float(max(params.alpha_rel_change_ref_floor, np.finfo(float).eps)))
+                row["alpha_rel_change_from_prev"] = float(abs(alpha_curr - alpha_prev) / denom)
+            else:
+                row["alpha_rel_change_from_prev"] = np.nan
+        else:
+            row["alpha_rel_change_from_prev"] = np.nan
         inner_cycle_rows.append(row)
         if bool(params.enable_inner_cycle_metrics_print):
             print(
                 "[inner-metrics] "
                 f"total={row['total_cycle_number']} outer={row['outer_cycle']} inner={row['inner_step']} "
                 f"L={row['L_total_m']:.6e} alpha={row['alpha']:.6e} "
+                f"dalpha_rel={row['alpha_rel_change_from_prev']:.6e} "
                 f"Pinf={row['P_infty']:.6e} Q={row['Q']:.6e} "
                 f"Crel={row['C_rel_m_per_N']:.6e} "
                 f"Keff_mean={row['K_eff_mean_MPa_sqrt_m']:.6e} "
@@ -373,6 +389,85 @@ def run_network_growth_uncoupled(
                 f"ntip={row['n_tip_reports']}"
             )
         inner_cycle_counter += 1
+
+    def _build_inner_cycle_metrics_payload(rows):
+        if not rows:
+            return None
+        metrics = {k: np.asarray([r[k] for r in rows]) for k in rows[0].keys()}
+
+        L_total = np.asarray(metrics["L_total_m"], float)
+        C_rel_raw = np.asarray(metrics["C_rel_m_per_N"], float)
+        C_rel = np.abs(C_rel_raw)
+        metrics["C_rel_m_per_N_signed"] = C_rel_raw
+        metrics["C_rel_m_per_N"] = C_rel
+        A_crack = 2.0 * float(params.disk_thickness_m) * L_total
+        dC_dA = np.full_like(C_rel, np.nan, dtype=float)
+        for i in range(1, len(C_rel)):
+            dA = float(A_crack[i] - A_crack[i - 1])
+            if abs(dA) > 0.0 and np.isfinite(C_rel[i]) and np.isfinite(C_rel[i - 1]):
+                dC_dA[i] = (C_rel[i] - C_rel[i - 1]) / dA
+
+        U = np.full_like(C_rel, np.nan, dtype=float)
+        W = np.full_like(C_rel, np.nan, dtype=float)
+        Phi = np.full_like(C_rel, np.nan, dtype=float)
+        G = np.full_like(C_rel, np.nan, dtype=float)
+
+        mode = str(params.control_mode).strip().lower()
+        if mode == "force":
+            if params.force_P_N is not None:
+                P0 = float(params.force_P_N)
+                U = 0.5 * (P0 ** 2) * C_rel
+                W = (P0 ** 2) * C_rel
+                Phi = U - W
+                G = 0.5 * (P0 ** 2) * dC_dA
+        elif mode == "displacement":
+            if params.disp_delta_m is not None:
+                d0 = float(params.disp_delta_m)
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    U = 0.5 * (d0 ** 2) / C_rel
+                    Phi = U
+                    G = 0.5 * (d0 ** 2) * dC_dA / (C_rel * C_rel)
+                W[:] = np.nan
+
+        metrics["A_crack_m2"] = A_crack
+        metrics["dC_dA_1_per_Pa"] = dC_dA
+        metrics["U_J"] = U
+        metrics["W_J"] = W
+        metrics["Phi_J"] = Phi
+        metrics["G_J_per_m2"] = G
+        metrics["control_mode"] = np.asarray([str(params.control_mode)] * len(L_total), dtype=str)
+        return metrics
+
+    def _persist_inner_cycle_metrics():
+        if not bool(params.enable_inner_cycle_metrics_save):
+            return None
+        metrics = _build_inner_cycle_metrics_payload(inner_cycle_rows)
+        if metrics is None:
+            return None
+        np.savez(out_dir / "inner_cycle_metrics.npz", **metrics)
+        return metrics
+
+    def _persist_tip_history():
+        if not tip_history:
+            return
+        np.savez(
+            out_dir / "tip_history.npz",
+            x_tip_m=np.asarray([r["x_tip_m"] for r in tip_history], float),
+            y_tip_m=np.asarray([r["y_tip_m"] for r in tip_history], float),
+            KI_MPa_sqrt_m=np.asarray([r["KI_MPa_sqrt_m"] for r in tip_history], float),
+            KII_MPa_sqrt_m=np.asarray([r["KII_MPa_sqrt_m"] for r in tip_history], float),
+            theta_rad=np.asarray([r.get("theta_rad", np.nan) for r in tip_history], float),
+            theta_deg=np.asarray([r.get("theta_deg", np.nan) for r in tip_history], float),
+            grew=np.asarray([bool(r.get("grew", False)) for r in tip_history], bool),
+            reason=np.asarray([r.get("reason", "") for r in tip_history], dtype=str),
+            delta_a_m=np.asarray([r.get("delta_a_m", np.nan) for r in tip_history], float),
+            total_length_m=np.asarray([r.get("total_length_m", np.nan) for r in tip_history], float),
+            phase=np.asarray([r["phase"] for r in tip_history], dtype=str),
+            outer_cycle=np.asarray([r["outer_cycle"] for r in tip_history], int),
+            inner_step=np.asarray([r["inner_step"] for r in tip_history], int),
+            global_step=np.asarray([r["global_step"] for r in tip_history], int),
+            tip_vid=np.asarray([r["tip_vid"] for r in tip_history], int),
+        )
 
     def _record_inner_step_reports(network_before_growth, reports, *, outer_cycle, inner_step, global_step):
         if not reports:
@@ -475,211 +570,231 @@ def run_network_growth_uncoupled(
 
         return res
 
-    global_step=0
+    global_step = 0
     last_outer_cycle = 0
-    terminated_due_to_tip_outside = False
+    terminate_run = False
+    terminate_tag = ""
+    res = None
 
-    def _tips_outside_disk(network_state) -> bool:
-        """Return True if any degree-1 crack tip lies outside disk radius."""
+    def _tip_outside_counts(network_state) -> Tuple[int, int]:
         tol = float(max(params.tip_outside_tolerance_m, 0.0))
         deg = netops.degree_map(network_state)
         polylines = netops.extract_open_polylines(network_state)
         tips = netops.extract_deg1_tips(network_state, polylines, deg) or []
+        n_tips = int(len(tips))
+        n_outside = 0
         for tip in tips:
             x_tip, y_tip = np.asarray(getattr(tip, "x_tip"), float).reshape(2,)
             if float(np.hypot(x_tip, y_tip)) > (R_disk + tol):
-                return True
-        return False
+                n_outside += 1
+        return n_tips, int(n_outside)
 
-    # INITIAL
-    step_dir=out_dir/"cycle_00_initial"
-    step_dir.mkdir(parents=True,exist_ok=True)
-    res=solve_only(net,step_dir)
-    if plot_hook: plot_hook("initial",res,step_dir)
-    _record_tip_snapshot(net, res, phase="initial", outer_cycle=0, inner_step=0, global_step=global_step)
+    def _tips_outside_disk_stop_condition(network_state) -> Tuple[bool, int, int, str]:
+        n_tips, n_outside = _tip_outside_counts(network_state)
+        mode_raw = str(getattr(params, "tip_outside_stop_mode", "any")).strip().lower()
+        mode = "all" if mode_raw == "all" else "any"
+        if n_tips <= 0:
+            return False, n_tips, n_outside, mode
+        if mode == "all":
+            return bool(n_outside == n_tips), n_tips, n_outside, mode
+        return bool(n_outside > 0), n_tips, n_outside, mode
 
-    for cyc in range(1,params.max_cycles+1):
-        last_outer_cycle = int(cyc)
-        inner_step = 0
+    def _all_keff_below_kc(reports) -> Tuple[bool, int, int, float, float]:
+        n_total = 0
+        keff_vals = []
+        for rep in (reports or []):
+            n_total += 1
+            KI = float(getattr(rep, "KI", np.nan))
+            KII = float(getattr(rep, "KII", np.nan))
+            if np.isfinite(KI) and np.isfinite(KII):
+                keff_vals.append(float(np.sqrt(KI * KI + KII * KII)))
+        n_finite = int(len(keff_vals))
+        if n_total <= 0 or n_finite != n_total:
+            return False, int(n_total), int(n_finite), np.nan, np.nan
+        keff_arr = np.asarray(keff_vals, float)
+        keff_min = float(np.min(keff_arr))
+        keff_max = float(np.max(keff_arr))
+        return bool(np.all(keff_arr <= float(Kc_eff))), int(n_total), int(n_finite), keff_min, keff_max
 
-        # Growth loop
-        while True:
-            net_before_growth = net
-            result=prop.grow_one_increment(net_before_growth)
-            inner_step += 1
-            _record_inner_step_reports(
-                net_before_growth,
-                result.reports,
-                outer_cycle=cyc,
-                inner_step=inner_step,
-                global_step=global_step + 1,
-            )
-            net=result.network_new
-            grew=sum(1 for r in result.reports if bool(getattr(r,"grew",False)))
-            global_step+=1
-            # Enforce intersections + prune small segments after each inner step
-            net=update_network_with_intersections(
-                net,
-                detect_mode=params.intersection_detect_mode,
-                verbose=params.intersection_verbose,
-            )
-            simplifier=CrackNetworkSimplifier(config=simp_cfg)
-            V=np.array([[int(v.id),v.x,v.y] for v in net.vertices],float)
-            C=np.array([[int(e.v0),int(e.v1)] for e in net.edges],int)
-            simplifier.load_from_arrays(V,C)
-            simplifier.simplify(verbose=False)
-            V2,C2=simplifier.to_arrays()
+    def _alpha_relative_change_from_last_two_rows() -> float:
+        if len(inner_cycle_rows) < 2:
+            return np.nan
+        alpha_prev = float(inner_cycle_rows[-2].get("alpha", np.nan))
+        alpha_curr = float(inner_cycle_rows[-1].get("alpha", np.nan))
+        if not (np.isfinite(alpha_prev) and np.isfinite(alpha_curr)):
+            return np.nan
+        denom = max(abs(alpha_prev), float(max(params.alpha_rel_change_ref_floor, np.finfo(float).eps)))
+        return float(abs(alpha_curr - alpha_prev) / denom)
 
-            net=CrackNetworkV4.from_vertices_connectivity(
-                vertices=V2,connectivity=C2,Nv_max=4,validate=True)
+    try:
+        # INITIAL
+        step_dir=out_dir/"cycle_00_initial"
+        step_dir.mkdir(parents=True,exist_ok=True)
+        res=solve_only(net,step_dir)
+        if plot_hook: plot_hook("initial",res,step_dir)
+        _record_tip_snapshot(net, res, phase="initial", outer_cycle=0, inner_step=0, global_step=global_step)
 
-            if bool(params.enable_inner_cycle_metrics_save):
-                _record_inner_cycle_metrics(
-                    net,
+        for cyc in range(1,params.max_cycles+1):
+            last_outer_cycle = int(cyc)
+            inner_step = 0
+
+            # Growth loop
+            while True:
+                net_before_growth = net
+                result=prop.grow_one_increment(net_before_growth)
+                inner_step += 1
+                _record_inner_step_reports(
+                    net_before_growth,
+                    result.reports,
                     outer_cycle=cyc,
                     inner_step=inner_step,
-                    global_step=global_step,
-                    reports=result.reports,
+                    global_step=global_step + 1,
                 )
+                net=result.network_new
+                grew=sum(1 for r in result.reports if bool(getattr(r,"grew",False)))
+                global_step+=1
+                # Enforce intersections + prune small segments after each inner step
+                net=update_network_with_intersections(
+                    net,
+                    detect_mode=params.intersection_detect_mode,
+                    verbose=params.intersection_verbose,
+                )
+                simplifier=CrackNetworkSimplifier(config=simp_cfg)
+                V=np.array([[int(v.id),v.x,v.y] for v in net.vertices],float)
+                C=np.array([[int(e.v0),int(e.v1)] for e in net.edges],int)
+                simplifier.load_from_arrays(V,C)
+                simplifier.simplify(verbose=False)
+                V2,C2=simplifier.to_arrays()
 
-            if bool(params.check_tip_outside_disk) and _tips_outside_disk(net):
-                print(
-                    "[stop] detected crack tip outside disk "
-                    f"(R={R_disk:.6e} m, tol={float(params.tip_outside_tolerance_m):.6e} m) "
-                    f"at outer={cyc}, inner={inner_step}, global_step={global_step}."
+                net=CrackNetworkV4.from_vertices_connectivity(
+                    vertices=V2,connectivity=C2,Nv_max=4,validate=True)
+
+                need_inner_metrics = bool(params.enable_inner_cycle_metrics_save) or bool(params.stop_on_alpha_stabilization)
+                if need_inner_metrics:
+                    _record_inner_cycle_metrics(
+                        net,
+                        outer_cycle=cyc,
+                        inner_step=inner_step,
+                        global_step=global_step,
+                        reports=result.reports,
+                    )
+                    _persist_inner_cycle_metrics()
+
+                if bool(params.check_tip_outside_disk):
+                    tips_stop, n_tips, n_outside, outside_mode = _tips_outside_disk_stop_condition(net)
+                    if tips_stop:
+                        print(
+                            "[stop] tip-boundary criterion met "
+                            f"(mode={outside_mode}, outside={n_outside}/{n_tips}, "
+                            f"R={R_disk:.6e} m, tol={float(params.tip_outside_tolerance_m):.6e} m) "
+                            f"at outer={cyc}, inner={inner_step}, global_step={global_step}."
+                        )
+                        terminate_run = True
+                        terminate_tag = f"{outside_mode}_tips_outside"
+                        break
+
+                if bool(params.stop_on_all_keff_below_kc):
+                    keff_stop, n_tips_total, n_tips_finite, keff_min_pa, keff_max_pa = _all_keff_below_kc(result.reports)
+                    if keff_stop:
+                        print(
+                            "[stop] all-tip K_eff criterion met "
+                            f"(tips={n_tips_finite}/{n_tips_total}, "
+                            f"K_eff_min={keff_min_pa * 1e-6:.6e} MPa*sqrt(m), "
+                            f"K_eff_max={keff_max_pa * 1e-6:.6e} MPa*sqrt(m), "
+                            f"Kc={float(Kc_eff) * 1e-6:.6e} MPa*sqrt(m)) "
+                            f"at outer={cyc}, inner={inner_step}, global_step={global_step}."
+                        )
+                        terminate_run = True
+                        terminate_tag = "all_keff_below_kc"
+                        break
+
+                if bool(params.stop_on_alpha_stabilization):
+                    alpha_rel_change = _alpha_relative_change_from_last_two_rows()
+                    alpha_thresh = float(max(params.alpha_rel_change_threshold, 0.0))
+                    if np.isfinite(alpha_rel_change) and (alpha_rel_change <= alpha_thresh):
+                        alpha_prev = float(inner_cycle_rows[-2].get("alpha", np.nan))
+                        alpha_curr = float(inner_cycle_rows[-1].get("alpha", np.nan))
+                        print(
+                            "[stop] alpha stabilization criterion met "
+                            f"(alpha_prev={alpha_prev:.6e}, alpha_curr={alpha_curr:.6e}, "
+                            f"rel_change={alpha_rel_change:.6e}, threshold={alpha_thresh:.6e}) "
+                            f"at outer={cyc}, inner={inner_step}, global_step={global_step}."
+                        )
+                        terminate_run = True
+                        terminate_tag = "alpha_stable"
+                        break
+
+                reached_inner_cap = (
+                    params.max_inner_cycles_per_outer is not None
+                    and int(params.max_inner_cycles_per_outer) > 0
+                    and int(inner_step) >= int(params.max_inner_cycles_per_outer)
                 )
-                terminated_due_to_tip_outside = True
+                if reached_inner_cap:
+                    print(
+                        "[inner-stop] reached max_inner_cycles_per_outer="
+                        f"{int(params.max_inner_cycles_per_outer)} at outer={cyc}."
+                    )
+                    break
+
+                if grew==0 or len(net.vertices)>=params.vertex_high:
+                    break
+
+            if terminate_run:
+                # Solve current network once for a clean terminal state, then stop outer cycles.
+                tag = str(terminate_tag).strip() if str(terminate_tag).strip() else "criterion"
+                step_dir=out_dir/f"cycle_{cyc:02d}_terminated_{tag}"
+                step_dir.mkdir(parents=True,exist_ok=True)
+                res=solve_only(net,step_dir,save_inner_outputs=bool(params.enable_inner_cycle_plot_save))
+                if plot_hook: plot_hook(f"cycle_{cyc:02d}_terminated_{tag}",res,step_dir)
+                _record_tip_snapshot(net, res, phase=f"terminated_{tag}", outer_cycle=cyc, inner_step=inner_step, global_step=global_step)
                 break
 
-            reached_inner_cap = (
-                params.max_inner_cycles_per_outer is not None
-                and int(params.max_inner_cycles_per_outer) > 0
-                and int(inner_step) >= int(params.max_inner_cycles_per_outer)
-            )
-            if reached_inner_cap:
-                print(
-                    "[inner-stop] reached max_inner_cycles_per_outer="
-                    f"{int(params.max_inner_cycles_per_outer)} at outer={cyc}."
-                )
-                break
-
-            if grew==0 or len(net.vertices)>=params.vertex_high:
-                break
-
-        if terminated_due_to_tip_outside:
-            # Solve current network once for a clean terminal state, then stop outer cycles.
-            step_dir=out_dir/f"cycle_{cyc:02d}_terminated_tip_outside"
+            # Pre-simplify (or post-step) visualization
+            step_dir=out_dir/f"cycle_{cyc:02d}_pre_simplify"
             step_dir.mkdir(parents=True,exist_ok=True)
             res=solve_only(net,step_dir,save_inner_outputs=bool(params.enable_inner_cycle_plot_save))
-            if plot_hook: plot_hook(f"cycle_{cyc:02d}_terminated_tip_outside",res,step_dir)
-            _record_tip_snapshot(net, res, phase="terminated_tip_outside", outer_cycle=cyc, inner_step=inner_step, global_step=global_step)
-            break
+            if plot_hook: plot_hook(f"cycle_{cyc:02d}_pre_simplify",res,step_dir)
+            _record_tip_snapshot(net, res, phase="outer_pre_simplify", outer_cycle=cyc, inner_step=inner_step, global_step=global_step)
 
-        # Pre-simplify (or post-step) visualization
-        step_dir=out_dir/f"cycle_{cyc:02d}_pre_simplify"
-        step_dir.mkdir(parents=True,exist_ok=True)
-        res=solve_only(net,step_dir,save_inner_outputs=bool(params.enable_inner_cycle_plot_save))
-        if plot_hook: plot_hook(f"cycle_{cyc:02d}_pre_simplify",res,step_dir)
-        _record_tip_snapshot(net, res, phase="outer_pre_simplify", outer_cycle=cyc, inner_step=inner_step, global_step=global_step)
+            if not params.simplify_each_step:
+                # Intersection BEFORE simplify
+                net=update_network_with_intersections(
+                    net,
+                    detect_mode=params.intersection_detect_mode,
+                    verbose=params.intersection_verbose,
+                )
 
-        if not params.simplify_each_step:
-            # Intersection BEFORE simplify
-            net=update_network_with_intersections(
-                net,
-                detect_mode=params.intersection_detect_mode,
-                verbose=params.intersection_verbose,
-            )
+                # Simplify
+                simplifier=CrackNetworkSimplifier(config=simp_cfg)
+                V=np.array([[int(v.id),v.x,v.y] for v in net.vertices],float)
+                C=np.array([[int(e.v0),int(e.v1)] for e in net.edges],int)
+                simplifier.load_from_arrays(V,C)
+                simplifier.simplify(verbose=False)
+                V2,C2=simplifier.to_arrays()
 
-            # Simplify
-            simplifier=CrackNetworkSimplifier(config=simp_cfg)
-            V=np.array([[int(v.id),v.x,v.y] for v in net.vertices],float)
-            C=np.array([[int(e.v0),int(e.v1)] for e in net.edges],int)
-            simplifier.load_from_arrays(V,C)
-            simplifier.simplify(verbose=False)
-            V2,C2=simplifier.to_arrays()
+                net=CrackNetworkV4.from_vertices_connectivity(
+                    vertices=V2,connectivity=C2,Nv_max=4,validate=True)
 
-            net=CrackNetworkV4.from_vertices_connectivity(
-                vertices=V2,connectivity=C2,Nv_max=4,validate=True)
+            # Post-simplify (or per-step-simplified) solve
+            step_dir=out_dir/f"cycle_{cyc:02d}_post_simplify"
+            step_dir.mkdir(parents=True,exist_ok=True)
+            res=solve_only(net,step_dir,save_inner_outputs=bool(params.enable_inner_cycle_plot_save))
+            if plot_hook: plot_hook(f"cycle_{cyc:02d}_post_simplify",res,step_dir)
+            _record_tip_snapshot(net, res, phase="outer_post_simplify", outer_cycle=cyc, inner_step=inner_step, global_step=global_step)
 
-        # Post-simplify (or per-step-simplified) solve
-        step_dir=out_dir/f"cycle_{cyc:02d}_post_simplify"
-        step_dir.mkdir(parents=True,exist_ok=True)
-        res=solve_only(net,step_dir,save_inner_outputs=bool(params.enable_inner_cycle_plot_save))
-        if plot_hook: plot_hook(f"cycle_{cyc:02d}_post_simplify",res,step_dir)
-        _record_tip_snapshot(net, res, phase="outer_post_simplify", outer_cycle=cyc, inner_step=inner_step, global_step=global_step)
+        if plot_hook: plot_hook("final",res,step_dir)
+        _record_tip_snapshot(net, res, phase="final", outer_cycle=last_outer_cycle, inner_step=0, global_step=global_step)
+    except KeyboardInterrupt:
+        print("[interrupt] KeyboardInterrupt received; persisting partial outputs.")
+        raise
+    finally:
+        _persist_tip_history()
+        metrics = _persist_inner_cycle_metrics()
+        if (metrics is not None) and (res is not None):
+            setattr(res, "inner_cycle_metrics", metrics)
+        if res is not None:
+            setattr(res, "tip_history", tip_history)
 
-    if plot_hook: plot_hook("final",res,step_dir)
-    _record_tip_snapshot(net, res, phase="final", outer_cycle=last_outer_cycle, inner_step=0, global_step=global_step)
-
-    # Persist per-run tip history arrays for downstream aggregation.
-    if tip_history:
-        np.savez(
-            out_dir / "tip_history.npz",
-            x_tip_m=np.asarray([r["x_tip_m"] for r in tip_history], float),
-            y_tip_m=np.asarray([r["y_tip_m"] for r in tip_history], float),
-            KI_MPa_sqrt_m=np.asarray([r["KI_MPa_sqrt_m"] for r in tip_history], float),
-            KII_MPa_sqrt_m=np.asarray([r["KII_MPa_sqrt_m"] for r in tip_history], float),
-            theta_rad=np.asarray([r.get("theta_rad", np.nan) for r in tip_history], float),
-            theta_deg=np.asarray([r.get("theta_deg", np.nan) for r in tip_history], float),
-            grew=np.asarray([bool(r.get("grew", False)) for r in tip_history], bool),
-            reason=np.asarray([r.get("reason", "") for r in tip_history], dtype=str),
-            delta_a_m=np.asarray([r.get("delta_a_m", np.nan) for r in tip_history], float),
-            total_length_m=np.asarray([r.get("total_length_m", np.nan) for r in tip_history], float),
-            phase=np.asarray([r["phase"] for r in tip_history], dtype=str),
-            outer_cycle=np.asarray([r["outer_cycle"] for r in tip_history], int),
-            inner_step=np.asarray([r["inner_step"] for r in tip_history], int),
-            global_step=np.asarray([r["global_step"] for r in tip_history], int),
-            tip_vid=np.asarray([r["tip_vid"] for r in tip_history], int),
-        )
-
-    # Persist per-inner-cycle topology + energetics arrays for notebook use.
-    if bool(params.enable_inner_cycle_metrics_save) and inner_cycle_rows:
-        metrics = {k: np.asarray([r[k] for r in inner_cycle_rows]) for k in inner_cycle_rows[0].keys()}
-
-        L_total = np.asarray(metrics["L_total_m"], float)
-        C_rel_raw = np.asarray(metrics["C_rel_m_per_N"], float)
-        C_rel = np.abs(C_rel_raw)
-        metrics["C_rel_m_per_N_signed"] = C_rel_raw
-        metrics["C_rel_m_per_N"] = C_rel
-        A_crack = 2.0 * float(params.disk_thickness_m) * L_total
-        dC_dA = np.full_like(C_rel, np.nan, dtype=float)
-        for i in range(1, len(C_rel)):
-            dA = float(A_crack[i] - A_crack[i - 1])
-            if abs(dA) > 0.0 and np.isfinite(C_rel[i]) and np.isfinite(C_rel[i - 1]):
-                dC_dA[i] = (C_rel[i] - C_rel[i - 1]) / dA
-
-        U = np.full_like(C_rel, np.nan, dtype=float)
-        W = np.full_like(C_rel, np.nan, dtype=float)
-        Phi = np.full_like(C_rel, np.nan, dtype=float)
-        G = np.full_like(C_rel, np.nan, dtype=float)
-
-        mode = str(params.control_mode).strip().lower()
-        if mode == "force":
-            if params.force_P_N is not None:
-                P0 = float(params.force_P_N)
-                U = 0.5 * (P0 ** 2) * C_rel
-                W = (P0 ** 2) * C_rel
-                Phi = U - W
-                G = 0.5 * (P0 ** 2) * dC_dA
-        elif mode == "displacement":
-            if params.disp_delta_m is not None:
-                d0 = float(params.disp_delta_m)
-                with np.errstate(divide="ignore", invalid="ignore"):
-                    U = 0.5 * (d0 ** 2) / C_rel
-                    Phi = U
-                    G = 0.5 * (d0 ** 2) * dC_dA / (C_rel * C_rel)
-                W[:] = np.nan
-
-        metrics["A_crack_m2"] = A_crack
-        metrics["dC_dA_1_per_Pa"] = dC_dA
-        metrics["U_J"] = U
-        metrics["W_J"] = W
-        metrics["Phi_J"] = Phi
-        metrics["G_J_per_m2"] = G
-        metrics["control_mode"] = np.asarray([str(params.control_mode)] * len(L_total), dtype=str)
-
-        np.savez(out_dir / "inner_cycle_metrics.npz", **metrics)
-        setattr(res, "inner_cycle_metrics", metrics)
-
-    setattr(res, "tip_history", tip_history)
+    if res is None:
+        raise RuntimeError("No solver result was produced during network growth run.")
     return res
