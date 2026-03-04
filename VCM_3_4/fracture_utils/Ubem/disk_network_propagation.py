@@ -66,9 +66,11 @@ class CrackGrowthParams:
     # Optional callback to compute bounded-disk compliance for each inner cycle:
     # fn(network=..., outer_cycle=..., inner_step=..., global_step=..., out_dir=...) -> float
     compliance_evaluator: Optional[Callable[..., float]] = None
+    # Kept for backward compatibility; tip-outside stop is no longer used.
     check_tip_outside_disk: bool = False
     tip_outside_tolerance_m: float = 0.0
-    tip_outside_stop_mode: str = "any"  # "any" or "all"
+    tip_outside_stop_mode: str = "any"  # no-op
+    # Kept for backward compatibility; alpha-stabilization stop is no longer used.
     stop_on_alpha_stabilization: bool = False
     alpha_rel_change_threshold: float = 0.10
     alpha_rel_change_ref_floor: float = 1e-12
@@ -576,29 +578,6 @@ def run_network_growth_uncoupled(
     terminate_tag = ""
     res = None
 
-    def _tip_outside_counts(network_state) -> Tuple[int, int]:
-        tol = float(max(params.tip_outside_tolerance_m, 0.0))
-        deg = netops.degree_map(network_state)
-        polylines = netops.extract_open_polylines(network_state)
-        tips = netops.extract_deg1_tips(network_state, polylines, deg) or []
-        n_tips = int(len(tips))
-        n_outside = 0
-        for tip in tips:
-            x_tip, y_tip = np.asarray(getattr(tip, "x_tip"), float).reshape(2,)
-            if float(np.hypot(x_tip, y_tip)) > (R_disk + tol):
-                n_outside += 1
-        return n_tips, int(n_outside)
-
-    def _tips_outside_disk_stop_condition(network_state) -> Tuple[bool, int, int, str]:
-        n_tips, n_outside = _tip_outside_counts(network_state)
-        mode_raw = str(getattr(params, "tip_outside_stop_mode", "any")).strip().lower()
-        mode = "all" if mode_raw == "all" else "any"
-        if n_tips <= 0:
-            return False, n_tips, n_outside, mode
-        if mode == "all":
-            return bool(n_outside == n_tips), n_tips, n_outside, mode
-        return bool(n_outside > 0), n_tips, n_outside, mode
-
     def _all_keff_below_kc(reports) -> Tuple[bool, int, int, float, float]:
         n_total = 0
         keff_vals = []
@@ -615,16 +594,6 @@ def run_network_growth_uncoupled(
         keff_min = float(np.min(keff_arr))
         keff_max = float(np.max(keff_arr))
         return bool(np.all(keff_arr <= float(Kc_eff))), int(n_total), int(n_finite), keff_min, keff_max
-
-    def _alpha_relative_change_from_last_two_rows() -> float:
-        if len(inner_cycle_rows) < 2:
-            return np.nan
-        alpha_prev = float(inner_cycle_rows[-2].get("alpha", np.nan))
-        alpha_curr = float(inner_cycle_rows[-1].get("alpha", np.nan))
-        if not (np.isfinite(alpha_prev) and np.isfinite(alpha_curr)):
-            return np.nan
-        denom = max(abs(alpha_prev), float(max(params.alpha_rel_change_ref_floor, np.finfo(float).eps)))
-        return float(abs(alpha_curr - alpha_prev) / denom)
 
     try:
         # INITIAL
@@ -669,7 +638,7 @@ def run_network_growth_uncoupled(
                 net=CrackNetworkV4.from_vertices_connectivity(
                     vertices=V2,connectivity=C2,Nv_max=4,validate=True)
 
-                need_inner_metrics = bool(params.enable_inner_cycle_metrics_save) or bool(params.stop_on_alpha_stabilization)
+                need_inner_metrics = bool(params.enable_inner_cycle_metrics_save)
                 if need_inner_metrics:
                     _record_inner_cycle_metrics(
                         net,
@@ -679,19 +648,6 @@ def run_network_growth_uncoupled(
                         reports=result.reports,
                     )
                     _persist_inner_cycle_metrics()
-
-                if bool(params.check_tip_outside_disk):
-                    tips_stop, n_tips, n_outside, outside_mode = _tips_outside_disk_stop_condition(net)
-                    if tips_stop:
-                        print(
-                            "[stop] tip-boundary criterion met "
-                            f"(mode={outside_mode}, outside={n_outside}/{n_tips}, "
-                            f"R={R_disk:.6e} m, tol={float(params.tip_outside_tolerance_m):.6e} m) "
-                            f"at outer={cyc}, inner={inner_step}, global_step={global_step}."
-                        )
-                        terminate_run = True
-                        terminate_tag = f"{outside_mode}_tips_outside"
-                        break
 
                 if bool(params.stop_on_all_keff_below_kc):
                     keff_stop, n_tips_total, n_tips_finite, keff_min_pa, keff_max_pa = _all_keff_below_kc(result.reports)
@@ -706,22 +662,6 @@ def run_network_growth_uncoupled(
                         )
                         terminate_run = True
                         terminate_tag = "all_keff_below_kc"
-                        break
-
-                if bool(params.stop_on_alpha_stabilization):
-                    alpha_rel_change = _alpha_relative_change_from_last_two_rows()
-                    alpha_thresh = float(max(params.alpha_rel_change_threshold, 0.0))
-                    if np.isfinite(alpha_rel_change) and (alpha_rel_change <= alpha_thresh):
-                        alpha_prev = float(inner_cycle_rows[-2].get("alpha", np.nan))
-                        alpha_curr = float(inner_cycle_rows[-1].get("alpha", np.nan))
-                        print(
-                            "[stop] alpha stabilization criterion met "
-                            f"(alpha_prev={alpha_prev:.6e}, alpha_curr={alpha_curr:.6e}, "
-                            f"rel_change={alpha_rel_change:.6e}, threshold={alpha_thresh:.6e}) "
-                            f"at outer={cyc}, inner={inner_step}, global_step={global_step}."
-                        )
-                        terminate_run = True
-                        terminate_tag = "alpha_stable"
                         break
 
                 reached_inner_cap = (
