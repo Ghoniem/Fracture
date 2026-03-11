@@ -1,0 +1,520 @@
+{
+  "run_id": "20260303_205808_61a8ff0f",
+  "generated_at": "2026-03-03T21:28:27.807298",
+  "repo_root": "C:\\Users\\Owner\\Documents\\Repos\\Fracture\\VCM_3_4",
+  "notebook": "VCM_3_4/notebooks/disk_energetics.ipynb",
+  "rows": [
+    {
+      "group": "run",
+      "parameter": "run_id",
+      "default": "(generated)",
+      "effective": "20260303_205808_61a8ff0f",
+      "source": "derived"
+    },
+    {
+      "group": "run",
+      "parameter": "git_short_hash",
+      "default": "(from git)",
+      "effective": "61a8ff0f",
+      "source": "derived"
+    },
+    {
+      "group": "run",
+      "parameter": "COUPLING_METHOD",
+      "default": "iterative",
+      "effective": "iterative",
+      "source": "notebook"
+    },
+    {
+      "group": "run",
+      "parameter": "OUTER_CYCLES",
+      "default": 5,
+      "effective": 8,
+      "source": "notebook"
+    },
+    {
+      "group": "run",
+      "parameter": "n_inner_max_for_index",
+      "default": null,
+      "effective": 8,
+      "source": "notebook"
+    },
+    {
+      "group": "network",
+      "parameter": "mm",
+      "default": 0.001,
+      "effective": 0.001,
+      "source": "notebook"
+    },
+    {
+      "group": "network",
+      "parameter": "vertices",
+      "default": "(current in source)",
+      "effective": [
+        [
+          0.0,
+          -0.001,
+          -0.006
+        ],
+        [
+          1.0,
+          -0.0005,
+          0.005
+        ],
+        [
+          2.0,
+          0.001,
+          -0.003
+        ],
+        [
+          3.0,
+          0.0015,
+          0.0025
+        ],
+        [
+          4.0,
+          -0.002,
+          -0.0025
+        ],
+        [
+          5.0,
+          0.004,
+          -0.001
+        ],
+        [
+          6.0,
+          -0.006,
+          0.003
+        ],
+        [
+          7.0,
+          0.002,
+          0.0015
+        ]
+      ],
+      "source": "notebook"
+    },
+    {
+      "group": "network",
+      "parameter": "connectivity",
+      "default": "(current in source)",
+      "effective": [
+        [
+          0,
+          1
+        ],
+        [
+          2,
+          3
+        ],
+        [
+          4,
+          5
+        ],
+        [
+          6,
+          7
+        ]
+      ],
+      "source": "notebook"
+    },
+    {
+      "group": "loading",
+      "parameter": "U_Y_TOP_IMPOSED",
+      "default": -8e-06,
+      "effective": -1e-05,
+      "source": "notebook"
+    },
+    {
+      "group": "loading",
+      "parameter": "U_Y_BOTTOM_IMPOSED",
+      "default": 0.0,
+      "effective": 0.0,
+      "source": "notebook"
+    },
+    {
+      "group": "disk",
+      "parameter": "R",
+      "default": null,
+      "effective": 0.0127,
+      "source": "notebook/default"
+    },
+    {
+      "group": "disk",
+      "parameter": "P_total",
+      "default": null,
+      "effective": 3800.0,
+      "source": "notebook/default"
+    },
+    {
+      "group": "disk",
+      "parameter": "E",
+      "default": null,
+      "effective": 231520000000.0,
+      "source": "notebook/default"
+    },
+    {
+      "group": "disk",
+      "parameter": "nu",
+      "default": null,
+      "effective": 0.3,
+      "source": "notebook/default"
+    },
+    {
+      "group": "disk",
+      "parameter": "n_elem",
+      "default": 120,
+      "effective": 120,
+      "source": "notebook/default"
+    },
+    {
+      "group": "disk",
+      "parameter": "gauss_n",
+      "default": 4,
+      "effective": 6,
+      "source": "notebook/default"
+    },
+    {
+      "group": "disk",
+      "parameter": "plane_strain",
+      "default": true,
+      "effective": true,
+      "source": "notebook/default"
+    },
+    {
+      "group": "disk",
+      "parameter": "arc_half_angle_deg",
+      "default": 15.0,
+      "effective": 15.0,
+      "source": "notebook/default"
+    },
+    {
+      "group": "disk",
+      "parameter": "h",
+      "default": 0.00635,
+      "effective": 0.00635,
+      "source": "notebook/default"
+    },
+    {
+      "group": "disk",
+      "parameter": "n_grid",
+      "default": 120,
+      "effective": 120,
+      "source": "notebook/default"
+    },
+    {
+      "group": "disk",
+      "parameter": "pad_frac",
+      "default": 0.03,
+      "effective": 0.03,
+      "source": "notebook/default"
+    },
+    {
+      "group": "plot",
+      "parameter": "cmap",
+      "default": "jet",
+      "effective": "jet",
+      "source": "notebook/default"
+    },
+    {
+      "group": "plot",
+      "parameter": "n_bands",
+      "default": 40,
+      "effective": 40,
+      "source": "notebook/default"
+    },
+    {
+      "group": "plot",
+      "parameter": "vmax_factor",
+      "default": 2.0,
+      "effective": 2.0,
+      "source": "notebook/default"
+    },
+    {
+      "group": "plot",
+      "parameter": "dpi",
+      "default": 300,
+      "effective": 300,
+      "source": "notebook/default"
+    },
+    {
+      "group": "plot",
+      "parameter": "match_limits_to_crack",
+      "default": true,
+      "effective": true,
+      "source": "notebook/default"
+    },
+    {
+      "group": "plot",
+      "parameter": "robust",
+      "default": true,
+      "effective": true,
+      "source": "notebook/default"
+    },
+    {
+      "group": "plot",
+      "parameter": "robust_pct",
+      "default": 97.0,
+      "effective": 97.0,
+      "source": "notebook/default"
+    },
+    {
+      "group": "plot",
+      "parameter": "symmetric",
+      "default": true,
+      "effective": true,
+      "source": "notebook/default"
+    },
+    {
+      "group": "plot",
+      "parameter": "n_levels",
+      "default": 30,
+      "effective": 60,
+      "source": "notebook/default"
+    },
+    {
+      "group": "plot",
+      "parameter": "n_line_levels",
+      "default": 20,
+      "effective": 15,
+      "source": "notebook/default"
+    },
+    {
+      "group": "plot",
+      "parameter": "fixed_vlim_mpa",
+      "default": null,
+      "effective": null,
+      "source": "notebook/default"
+    },
+    {
+      "group": "plot",
+      "parameter": "augmented_correction_stride",
+      "default": 4,
+      "effective": 4,
+      "source": "notebook/default"
+    },
+    {
+      "group": "plot_hook",
+      "parameter": "show_initial",
+      "default": true,
+      "effective": true,
+      "source": "notebook/default"
+    },
+    {
+      "group": "plot_hook",
+      "parameter": "show_cycles",
+      "default": false,
+      "effective": true,
+      "source": "notebook/default"
+    },
+    {
+      "group": "plot_hook",
+      "parameter": "show_final",
+      "default": true,
+      "effective": true,
+      "source": "notebook/default"
+    },
+    {
+      "group": "growth",
+      "parameter": "max_cycles",
+      "default": 10,
+      "effective": 8,
+      "source": "notebook/default"
+    },
+    {
+      "group": "growth",
+      "parameter": "L_limit_mm",
+      "default": 20.0,
+      "effective": 20.0,
+      "source": "notebook/default"
+    },
+    {
+      "group": "growth",
+      "parameter": "vertex_high",
+      "default": 18,
+      "effective": 120,
+      "source": "notebook/default"
+    },
+    {
+      "group": "growth",
+      "parameter": "max_inner_cycles_per_outer",
+      "default": null,
+      "effective": 8,
+      "source": "notebook/default"
+    },
+    {
+      "group": "growth",
+      "parameter": "enable_inner_cycle_metrics_save",
+      "default": true,
+      "effective": true,
+      "source": "notebook/default"
+    },
+    {
+      "group": "growth",
+      "parameter": "domain_area_m2",
+      "default": null,
+      "effective": 0.0005067074790974977,
+      "source": "notebook/default"
+    },
+    {
+      "group": "growth",
+      "parameter": "disk_radius_m",
+      "default": null,
+      "effective": 0.0127,
+      "source": "notebook/default"
+    },
+    {
+      "group": "growth",
+      "parameter": "arc_half_angle_deg",
+      "default": 15.0,
+      "effective": 15.0,
+      "source": "notebook/default"
+    },
+    {
+      "group": "growth",
+      "parameter": "boundary_band_frac",
+      "default": 0.05,
+      "effective": 0.05,
+      "source": "notebook/default"
+    },
+    {
+      "group": "growth",
+      "parameter": "loading_axis",
+      "default": [
+        0.0,
+        1.0
+      ],
+      "effective": [
+        0.0,
+        1.0
+      ],
+      "source": "notebook/default"
+    },
+    {
+      "group": "growth",
+      "parameter": "control_mode",
+      "default": "force",
+      "effective": "displacement",
+      "source": "notebook/default"
+    },
+    {
+      "group": "growth",
+      "parameter": "disp_delta_m",
+      "default": null,
+      "effective": 1e-05,
+      "source": "notebook/default"
+    },
+    {
+      "group": "growth",
+      "parameter": "disk_thickness_m",
+      "default": 1.0,
+      "effective": 0.00635,
+      "source": "notebook/default"
+    },
+    {
+      "group": "growth",
+      "parameter": "inner_cycle_max_for_index",
+      "default": null,
+      "effective": 8,
+      "source": "notebook/default"
+    },
+    {
+      "group": "growth",
+      "parameter": "compliance_evaluator",
+      "default": null,
+      "effective": "<function compliance_callback at 0x00000257646443A0>",
+      "source": "notebook/default"
+    },
+    {
+      "group": "growth",
+      "parameter": "stop_on_all_keff_below_kc",
+      "default": false,
+      "effective": false,
+      "source": "notebook/default"
+    },
+    {
+      "group": "growth",
+      "parameter": "step_mode",
+      "default": "fixed_step",
+      "effective": "fixed_disp",
+      "source": "notebook/default"
+    },
+    {
+      "group": "growth",
+      "parameter": "f_fixed",
+      "default": 0.05,
+      "effective": 0.1,
+      "source": "notebook/default"
+    },
+    {
+      "group": "solver_kwargs",
+      "parameter": "ne_half",
+      "default": 90,
+      "effective": 90,
+      "source": "notebook/default"
+    },
+    {
+      "group": "solver_kwargs",
+      "parameter": "representation",
+      "default": "cheb_quad",
+      "effective": "cheb_quad",
+      "source": "notebook/default"
+    },
+    {
+      "group": "solver_kwargs",
+      "parameter": "node_distribution",
+      "default": "tip_dense",
+      "effective": "tip_dense",
+      "source": "notebook/default"
+    },
+    {
+      "group": "solver_kwargs",
+      "parameter": "solver_option",
+      "default": "parametrized_crack",
+      "effective": "parametrized_crack",
+      "source": "notebook/default"
+    },
+    {
+      "group": "solver_kwargs",
+      "parameter": "parametrization",
+      "default": "polyline",
+      "effective": "polyline",
+      "source": "notebook/default"
+    },
+    {
+      "group": "solver_kwargs",
+      "parameter": "nq_col",
+      "default": 12,
+      "effective": 12,
+      "source": "notebook/default"
+    },
+    {
+      "group": "solver_kwargs",
+      "parameter": "nq_stress",
+      "default": 16,
+      "effective": 16,
+      "source": "notebook/default"
+    },
+    {
+      "group": "solver_kwargs",
+      "parameter": "crack_mode",
+      "default": "half",
+      "effective": "half",
+      "source": "notebook/default"
+    },
+    {
+      "group": "solver_kwargs",
+      "parameter": "junction_model",
+      "default": "core",
+      "effective": "core",
+      "source": "notebook/default"
+    },
+    {
+      "group": "solver_kwargs",
+      "parameter": "Kc_demo",
+      "default": "(module default n/a)",
+      "effective": 2000000.0,
+      "source": "notebook/default"
+    }
+  ]
+}
