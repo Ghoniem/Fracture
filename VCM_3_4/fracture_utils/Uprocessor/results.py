@@ -97,12 +97,14 @@ class DCEResultsNetworkV4:
         self._parity_cache = parity
         return parity
 
-    def reconstruct_cod_csd_parametrized(
-        self,
-        edge_index: int,
-        n_pts: int = 4000,
-        enforce_global_tip_zero: bool = True,
-    ):
+    def _extract_polyline_meta_for_edge(self, edge_index: int) -> dict:
+        """Resolve all polyline-metadata that both reconstruct_* methods need.
+
+        Returns a flat dict with keys: pid, meta, solp, path_vids, path_edges,
+        segL, Ltot, s_vert, k, s0, Le, edge, v_start, v_end, dir_sign. Raises
+        on missing parametrized metadata; applies the same arc/cspline single-
+        edge fallbacks used historically.
+        """
         edge_index = int(edge_index)
         if not self.is_parametrized():
             raise AttributeError("This results object is intended for solver_option='parametrized_crack'.")
@@ -123,8 +125,8 @@ class DCEResultsNetworkV4:
         path_vids = [int(v) for v in meta.get("path_vertex_ids", [])]
         path_edges = [int(i) for i in meta.get("path_edge_indices", [])]
         segL = np.asarray(meta.get("segment_lengths", []), float)
-        # --- Robust fallback for mixed parametrizations (cspline/arc) ---
-        # segment_lengths may be absent or not aligned with path vertices; recompute from geometry when needed.
+        # segment_lengths may be absent or misaligned with path_vids for mixed
+        # parametrizations; recompute from geometry when needed.
         if segL.size == 0 or segL.size != (len(path_vids) - 1):
             segL = np.zeros(max(0, len(path_vids) - 1), float)
             for ii in range(len(path_vids) - 1):
@@ -132,16 +134,17 @@ class DCEResultsNetworkV4:
                 v1 = self.calc.network.V(int(path_vids[ii + 1]))
                 segL[ii] = math.hypot(float(v1.x - v0.x), float(v1.y - v0.y))
         Ltot = float(meta.get("total_length", np.sum(segL)))
-        # --- Guard for arc / cspline single-edge polylines ---
+
+        # arc / cspline single-edge polylines may not populate path_vertex_ids
         if len(path_vids) < 2:
-            edge = self.calc.network.edges[edge_index]
-            path_vids = [int(edge.v0), int(edge.v1)]
+            edge_fb = self.calc.network.edges[edge_index]
+            path_vids = [int(edge_fb.v0), int(edge_fb.v1)]
         if len(path_edges) == 0:
             path_edges = [int(edge_index)]
         if segL.size == 0 or segL.size != (len(path_vids) - 1):
             try:
-                ds = np.asarray(solp.get("ds", []), float).reshape(-1,)
-                Lds = float(np.sum(ds)) if ds.size > 0 else 0.0
+                ds_fb = np.asarray(solp.get("ds", []), float).reshape(-1,)
+                Lds = float(np.sum(ds_fb)) if ds_fb.size > 0 else 0.0
             except Exception:
                 Lds = 0.0
             if Lds > 0.0:
@@ -158,6 +161,16 @@ class DCEResultsNetworkV4:
         if edge_index not in path_edges:
             raise ValueError(f"Edge {edge_index} is not in polyline path for pid={pid}.")
 
+        # Defensive: ensure segL is non-empty even after fallbacks
+        if segL is None or len(segL) == 0:
+            ds_fb = np.asarray(solp.get("ds", []), float).reshape(-1,)
+            if ds_fb.size > 0:
+                segL = np.array([float(np.sum(ds_fb))], float)
+            else:
+                v0_fb = self.calc.network.V(path_vids[0])
+                v1_fb = self.calc.network.V(path_vids[1])
+                segL = np.array([float(np.hypot(v1_fb.x - v0_fb.x, v1_fb.y - v0_fb.y))], float)
+
         s_vert = np.zeros(len(path_vids), float)
         if len(segL) == len(path_vids) - 1:
             s_vert[1:] = np.cumsum(segL)
@@ -165,7 +178,6 @@ class DCEResultsNetworkV4:
         k = path_edges.index(edge_index)
         s0 = float(s_vert[k])
         Le = float(segL[k])
-        a = 0.5 * Le
 
         edge = self.calc.network.edges[edge_index]
         v_start = int(path_vids[k])
@@ -176,6 +188,27 @@ class DCEResultsNetworkV4:
             dir_sign = -1
         else:
             dir_sign = +1
+
+        return dict(
+            pid=pid, meta=meta, solp=solp,
+            path_vids=path_vids, path_edges=path_edges,
+            segL=segL, Ltot=Ltot, s_vert=s_vert,
+            k=k, s0=s0, Le=Le,
+            edge=edge, v_start=v_start, v_end=v_end,
+            dir_sign=dir_sign,
+        )
+
+    def reconstruct_cod_csd_parametrized(
+        self,
+        edge_index: int,
+        n_pts: int = 4000,
+        enforce_global_tip_zero: bool = True,
+    ):
+        info = self._extract_polyline_meta_for_edge(edge_index)
+        pid = info["pid"]; solp = info["solp"]
+        Ltot = info["Ltot"]; s0 = info["s0"]; Le = info["Le"]
+        edge = info["edge"]; dir_sign = info["dir_sign"]
+        a = 0.5 * Le
 
         n_pts = int(max(200, n_pts))
         x_edge = np.linspace(-a, a, n_pts)
@@ -263,97 +296,11 @@ class DCEResultsNetworkV4:
         edge_index: int,
         enforce_global_tip_zero: bool = True,
     ):
-        edge_index = int(edge_index)
-        if not self.is_parametrized():
-            raise AttributeError("This results object is intended for solver_option='parametrized_crack'.")
-
-        e2p = dict(self.sol.get("parametrized_edge_to_polyline", {}))
-        if edge_index not in e2p:
-            raise ValueError(f"Edge {edge_index} is not mapped to any polyline in solution metadata.")
-        pid = int(e2p[edge_index])
-
-        polylines = list(self.sol.get("parametrized_polylines", []))
-        poly_solutions = list(self.sol.get("polyline_solutions", []))
-        if pid < 0 or pid >= len(polylines) or pid >= len(poly_solutions):
-            raise ValueError("polyline metadata/solution missing or inconsistent.")
-
-        meta = dict(polylines[pid])
-        solp = dict(poly_solutions[pid])
-
-        path_vids = [int(v) for v in meta.get("path_vertex_ids", [])]
-        path_edges = [int(i) for i in meta.get("path_edge_indices", [])]
-        segL = np.asarray(meta.get("segment_lengths", []), float)
-        # --- Robust fallback for mixed parametrizations (cspline/arc) ---
-        # segment_lengths may be absent or not aligned with path vertices; recompute from geometry when needed.
-        if segL.size == 0 or segL.size != (len(path_vids) - 1):
-            segL = np.zeros(max(0, len(path_vids) - 1), float)
-            for ii in range(len(path_vids) - 1):
-                v0 = self.calc.network.V(int(path_vids[ii]))
-                v1 = self.calc.network.V(int(path_vids[ii + 1]))
-                segL[ii] = math.hypot(float(v1.x - v0.x), float(v1.y - v0.y))
-        Ltot = float(meta.get("total_length", np.sum(segL)))
-        # --- Guard for arc / cspline single-edge polylines ---
-        # Some parametrizations (e.g. a single arc edge) may not populate path_vertex_ids,
-        # while still providing a valid polyline solution. In that case, fall back to a
-        # single-segment path (this edge only) so reconstruction works.
-        if len(path_vids) < 2:
-            edge = self.calc.network.edges[edge_index]
-            path_vids = [int(edge.v0), int(edge.v1)]
-        if len(path_edges) == 0:
-            path_edges = [int(edge_index)]
-        # If segment lengths are still inconsistent, prefer polyline length from ds when available.
-        if segL.size == 0 or segL.size != (len(path_vids) - 1):
-            try:
-                ds = np.asarray(solp.get("ds", []), float).reshape(-1,)
-                Lds = float(np.sum(ds)) if ds.size > 0 else 0.0
-            except Exception:
-                Lds = 0.0
-            if Lds > 0.0:
-                segL = np.array([Lds], float)
-                Ltot = float(meta.get("total_length", Lds))
-            else:
-                segL = np.zeros(max(0, len(path_vids) - 1), float)
-                for ii in range(len(path_vids) - 1):
-                    v0 = self.calc.network.V(int(path_vids[ii]))
-                    v1 = self.calc.network.V(int(path_vids[ii + 1]))
-                    segL[ii] = math.hypot(float(v1.x - v0.x), float(v1.y - v0.y))
-                Ltot = float(meta.get("total_length", np.sum(segL)))
-
-        if edge_index not in path_edges:
-            raise ValueError(f"Edge {edge_index} is not in polyline path for pid={pid}.")
-
-        # --- Robust guard: ensure path_vids/segL are non-empty (arc edges may not populate path graph) ---
-        if path_vids is None or len(path_vids) < 2:
-            edge_fallback = self.calc.network.edges[int(edge_index)]
-            path_vids = [int(edge_fallback.v0), int(edge_fallback.v1)]
-        if segL is None or len(segL) == 0:
-            # Prefer polyline length from ds when available
-            ds_fb = np.asarray(solp.get('ds', []), float).reshape(-1,)
-            if ds_fb.size > 0:
-                segL = np.array([float(np.sum(ds_fb))], float)
-            else:
-                # chord length fallback
-                v0_fb = self.calc.network.V(path_vids[0])
-                v1_fb = self.calc.network.V(path_vids[1])
-                segL = np.array([float(np.hypot(v1_fb.x - v0_fb.x, v1_fb.y - v0_fb.y))], float)
-        
-        s_vert = np.zeros(len(path_vids), float)
-        if len(segL) == len(path_vids) - 1:
-            s_vert[1:] = np.cumsum(segL)
-
-        k = path_edges.index(edge_index)
-        s0 = float(s_vert[k])
-        Le = float(segL[k])
+        info = self._extract_polyline_meta_for_edge(edge_index)
+        solp = info["solp"]
+        Ltot = info["Ltot"]; s0 = info["s0"]; Le = info["Le"]
+        edge = info["edge"]; dir_sign = info["dir_sign"]
         a_edge = 0.5 * Le
-
-        edge = self.calc.network.edges[edge_index]
-        v_start = int(path_vids[k]); v_end = int(path_vids[k + 1])
-        if int(edge.v0) == v_start and int(edge.v1) == v_end:
-            dir_sign = +1
-        elif int(edge.v1) == v_start and int(edge.v0) == v_end:
-            dir_sign = -1
-        else:
-            dir_sign = +1
 
         bI  = np.asarray(solp.get("bI"), float)
         bII = np.asarray(solp.get("bII"), float)
