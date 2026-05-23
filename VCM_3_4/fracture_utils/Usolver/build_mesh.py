@@ -193,16 +193,22 @@ def segment_parametric_nodes(
 
     if bool(cluster_start):
         if tip_cluster in ("cheb", "chebyshev"):
-            th = np.linspace(0.0, math.pi, Nk + 1)
-            xi = 0.5 * (1.0 - np.cos(th))
-            return 1.0 - xi  # dense near 0
+            # Half-Chebyshev on [0, pi/2]. xi = 1 - cos(theta) is monotone on
+            # [0, 1] with theta**2/2 density near theta=0 -- second-order
+            # endpoint clustering at xi=0 and roughly uniform at xi=1.
+            # The previous form used theta in [0, pi] (full Chebyshev) which is
+            # symmetric, so the "one-sided" branch silently produced two-sided
+            # clustering.
+            th = np.linspace(0.0, 0.5 * math.pi, Nk + 1)
+            return 1.0 - np.cos(th)  # dense near 0, uniform near 1
         return np.power(u, pwr)
 
     if bool(cluster_end):
         if tip_cluster in ("cheb", "chebyshev"):
-            th = np.linspace(0.0, math.pi, Nk + 1)
-            xi = 0.5 * (1.0 - np.cos(th))
-            return xi  # dense near 1
+            # Half-Chebyshev: sin(theta) on [0, pi/2] is the mirror of the
+            # start-clustered form above.
+            th = np.linspace(0.0, 0.5 * math.pi, Nk + 1)
+            return np.sin(th)  # uniform near 0, dense near 1
         return 1.0 - np.power(1.0 - u, pwr)
 
     return u
