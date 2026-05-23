@@ -40,6 +40,9 @@ class StepControllerProto(Protocol):
         tip: TipState,
         theta0: float,
         keff0: float,
+        # build_candidate(network, tip, theta, delta_a) must return
+        # the tuple (new_network, new_tip_state) so the controller can evaluate
+        # SIFs at the freshly-grown tip rather than the now-interior old one.
         build_candidate,
         total_length: float,
     ) -> StepDecision: ...
@@ -127,16 +130,16 @@ class AdaptiveStepController:
                 da2 = max(da2, float(cfg.delta_a_min))
 
             # --- Trial at f
-            net1 = build_candidate(base_network, tip, float(theta0), da1)
+            net1, tip1 = build_candidate(base_network, tip, float(theta0), da1)
             sol1 = evaluator.solve(net1)
-            ev1 = evaluator.eval_tip(sol1, tip)
+            ev1 = evaluator.eval_tip(sol1, tip1)
             trials.append(TrialRecord(f=f, delta_a=da1, theta=ev1.theta, keff=ev1.keff, accepted=False))
 
             # --- Trial at 2f (if distinct)
             if da2 > da1 * (1.0 + 1e-12):
-                net2 = build_candidate(base_network, tip, float(theta0), da2)
+                net2, tip2 = build_candidate(base_network, tip, float(theta0), da2)
                 sol2 = evaluator.solve(net2)
-                ev2 = evaluator.eval_tip(sol2, tip)
+                ev2 = evaluator.eval_tip(sol2, tip2)
                 trials.append(TrialRecord(f=min(2.0*f, cfg.f_max), delta_a=da2, theta=ev2.theta, keff=ev2.keff, accepted=False))
 
                 if stable(ev1.theta, ev2.theta, ev1.keff, ev2.keff):

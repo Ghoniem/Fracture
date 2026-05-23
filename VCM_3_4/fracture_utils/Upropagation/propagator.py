@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from typing import Any, List, Optional, Tuple
 import numpy as np
 
+from .tip_state import TipState
+
 
 @dataclass
 class TipPropagationReport:
@@ -47,11 +49,12 @@ class CrackPropagator:
         self.remesh_policy = remesh_policy
         self.updater = updater
 
-        # Step controller is only used for adaptive_step (if available)
+        # Step controller is only used for adaptive_step (it's a no-op factory output otherwise).
+        # The factory in step_control.make_step_controller picks Fixed/Adaptive based on cfg.step_mode.
         self.step_controller = None
         try:
-            from .step_control import StepController
-            self.step_controller = StepController(cfg)
+            from .step_control import make_step_controller
+            self.step_controller = make_step_controller(cfg)
         except Exception:
             self.step_controller = None
 
@@ -114,9 +117,31 @@ class CrackPropagator:
             reason = ""
 
             if step_mode == "adaptive_step" and self.step_controller is not None:
-                # adaptive controller expects keyword-only signature (your step_control.py)
+                # build_candidate returns (new_network, new_tip) so the adaptive controller
+                # can evaluate SIFs at the *new* tip vertex rather than the now-interior old one.
                 def build_candidate(net_base, _tip, _theta, _delta_a):
-                    return updater.extend_tip(net_base, _tip, theta=float(_theta), delta_a=float(_delta_a))
+                    new_net = updater.extend_tip(
+                        net_base, _tip, theta=float(_theta), delta_a=float(_delta_a)
+                    )
+                    new_vid = int(max(int(v.id) for v in new_net.vertices))
+                    new_v = next(v for v in new_net.vertices if int(v.id) == new_vid)
+                    new_xy = np.array([float(new_v.x), float(new_v.y)], float)
+                    other_eid = int(new_v.edges[0])
+                    other_e = next(ee for ee in new_net.edges if int(ee.id) == other_eid)
+                    other_vid = int(other_e.v1) if int(other_e.v0) == new_vid else int(other_e.v0)
+                    other_v = next(v for v in new_net.vertices if int(v.id) == other_vid)
+                    t = new_xy - np.array([float(other_v.x), float(other_v.y)], float)
+                    tn = float(np.hypot(t[0], t[1]))
+                    new_that = t / tn if tn > 0.0 else np.array([1.0, 0.0], float)
+                    new_tot = float(getattr(_tip, "total_length", 0.0)) + float(_delta_a)
+                    new_tip = TipState(
+                        tip_id=_tip.tip_id,
+                        v_tip=new_vid,
+                        x_tip=new_xy,
+                        t_hat=new_that,
+                        total_length=new_tot,
+                    )
+                    return new_net, new_tip
 
                 try:
                     decision = self.step_controller.choose_step(
@@ -196,14 +221,14 @@ class CrackPropagator:
             except Exception as e:
                 reports.append(TipPropagationReport(vid, which, False, 0.0, float(theta), float(keff0), float(KI0), float(KII0), f"extend_failed:{e}"))
 
-        # Optional remesh (keep conservative for now)
+        # Optional remesh. All policies accept the same kwargs:
+        #     remesh_network(network, *, ne_half=...)
+        # ne_half is read from the evaluator's solver_kwargs when available; policies
+        # that don't need it (e.g. GlobalRemeshPolicy) simply ignore the value.
         if self.remesh_policy is not None:
-            try:
-                net_new = self.remesh_policy.remesh_network(net_new, solver_kwargs=getattr(self.evaluator, "solver_kwargs", None))
-            except Exception:
-                try:
-                    net_new = self.remesh_policy.remesh_network(net_new)
-                except Exception:
-                    pass
+            sk = getattr(self.evaluator, "solver_kwargs", None) or {}
+            ne_half = sk.get("ne_half", None)
+            ne_half = int(ne_half) if ne_half is not None else None
+            net_new = self.remesh_policy.remesh_network(net_new, ne_half=ne_half)
 
         return PropagationResult(network_new=net_new, reports=reports)
