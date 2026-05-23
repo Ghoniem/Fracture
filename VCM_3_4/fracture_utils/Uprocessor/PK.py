@@ -624,6 +624,8 @@ class PKProcessor:
             F += self.pk_force_density_from_stress(sig, dB)
 
         return F
+
+    @staticmethod
     def kink_angle_from_K(
         KI: float,
         KII: float,

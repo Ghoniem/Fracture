@@ -731,7 +731,6 @@ class DisplacementSIF:
       - sif_from_cod_fit_euclid_arrays
       - euclid_tip_fit_from_edge
       - solve_K_polyline
-      - solve_K
     """
 
     @staticmethod
@@ -749,10 +748,6 @@ class DisplacementSIF:
     @staticmethod
     def polyline(*args, **kwargs):
         return solve_K_polyline(*args, **kwargs)
-
-    @staticmethod
-    def solve(*args, **kwargs):
-        return solve_K(*args, **kwargs)
 
 
 class DisplacementGradientSIF:
@@ -797,7 +792,6 @@ __all__ = [
     "sif_from_cod_fit",
     "sif_from_cod_fit_euclid_arrays",
     "euclid_tip_fit_from_edge",
-    "solve_K",
     "solve_K_polyline",
     "estimate_K_from_jump_near_tip",
     "estimate_KI_KII_from_jumps_near_tip",
