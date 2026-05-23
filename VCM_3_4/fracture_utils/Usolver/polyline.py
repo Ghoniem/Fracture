@@ -119,10 +119,8 @@ def polyline_point_and_frame(network: CrackNetworkV4, vids_path: list[int], seg_
 # -------------------------
 # Half-crack helpers
 # -------------------------
-def vertex_degrees(network: CrackNetworkV4) -> dict[int,int]:
-    """Return vertex degree (number of incident edges) for each vertex id."""
-    v2e, _ = _build_adjacency(network)
-    return {int(v): int(len(eis)) for v, eis in v2e.items()}
+# vertex_degrees was previously redefined here; use build_geometry.vertex_degrees
+# (the single canonical implementation).
 
 def half_polylines_from_edges(network: CrackNetworkV4) -> list[dict]:
     """Build a polyline-like component list where each edge is treated as an independent 'half crack'.

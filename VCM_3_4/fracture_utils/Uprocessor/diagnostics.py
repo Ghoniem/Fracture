@@ -27,19 +27,10 @@ from typing import Dict, List, Tuple, Optional, Iterable
 
 import numpy as np
 
-
-# -------------------------
-# Core helpers
-# -------------------------
-
-def vertex_degrees_from_network(network) -> Dict[int, int]:
-    """Return vertex degree map from CrackNetworkV4 edges."""
-    deg: Dict[int, int] = {int(v.id): 0 for v in network.vertices}
-    for e in network.edges:
-        a = int(e.v0); b = int(e.v1)
-        deg[a] = deg.get(a, 0) + 1
-        deg[b] = deg.get(b, 0) + 1
-    return deg
+# vertex_degrees_from_network used to live here as a third copy of the same
+# routine. Use the canonical Usolver implementation, aliased to keep the old
+# name for any out-of-tree consumers.
+from fracture_utils.Usolver.build_geometry import vertex_degrees as vertex_degrees_from_network  # noqa: F401
 
 
 def build_vertex_incidence_from_solution(sol: dict) -> Dict[int, List[Tuple[int, str]]]:

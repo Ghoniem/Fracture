@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 from fracture_utils.Uplotter.core import DCEPlotterV4, StressPlotOptsV4
 from fracture_utils.Ubem.bem_solver import BEMSolver2D
 from fracture_utils.Ubem.bem_stress_field import stress_on_grid
+from fracture_utils.Ubem.disk_iterative_coupling import _interp_from_grid as _bilinear_on_grid
 
 
 # ============================================================
@@ -89,31 +90,9 @@ def plot_total_field(bem_dir, res, out_dir, tag, params: PlotParams, show=True):
     Syy_cr = np.load(out_dir / "crack_tmp_syy.npy")
     Sxy_cr = np.load(out_dir / "crack_tmp_sxy.npy")
 
-    # --- Optional augmented correction field from solved boundary unknowns y
-    def _interp_from_grid(xs0, ys0, Z0, Xq):
-        xs0 = np.asarray(xs0, float)
-        ys0 = np.asarray(ys0, float)
-        Z0 = np.asarray(Z0, float)
-        xq = np.asarray(Xq[:, 0], float)
-        yq = np.asarray(Xq[:, 1], float)
-
-        ix = np.searchsorted(xs0, xq) - 1
-        iy = np.searchsorted(ys0, yq) - 1
-        ix = np.clip(ix, 0, len(xs0) - 2)
-        iy = np.clip(iy, 0, len(ys0) - 2)
-
-        x0 = xs0[ix]
-        x1 = xs0[ix + 1]
-        y0 = ys0[iy]
-        y1 = ys0[iy + 1]
-        tx = (xq - x0) / np.maximum(x1 - x0, 1e-300)
-        ty = (yq - y0) / np.maximum(y1 - y0, 1e-300)
-
-        z00 = Z0[iy, ix]
-        z10 = Z0[iy, ix + 1]
-        z01 = Z0[iy + 1, ix]
-        z11 = Z0[iy + 1, ix + 1]
-        return (1 - tx) * (1 - ty) * z00 + tx * (1 - ty) * z10 + (1 - tx) * ty * z01 + tx * ty * z11
+    # _interp_from_grid was a local copy of the bilinear-interpolation routine in
+    # disk_iterative_coupling; we import it as _bilinear_on_grid above.
+    _interp_from_grid = _bilinear_on_grid
 
     def _augmented_correction_field():
         sol = getattr(res, "sol", {})
