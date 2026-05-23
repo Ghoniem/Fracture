@@ -33,15 +33,7 @@ class SIFSweepResult4:
     crack_meta: Dict[str, Any]
     results: List[SIFCaseResult4]
 
-def _err_pct(num: float, ana: float, eps: float = 1e-14) -> float:
-    """Relative percentage error, NaN when the analytical value cannot anchor one.
-
-    See validation_sif._err_pct for the rationale. Both files keep their own
-    copy; consolidation is a deduplication task tracked separately.
-    """
-    if abs(ana) <= eps:
-        return float("nan")
-    return float(100.0 * (num - ana) / ana)
+from ._common import err_pct as _err_pct  # noqa: F401  (re-export for backwards-compat)
 
 def run_sif_sweep4(
     *,

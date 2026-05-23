@@ -10,6 +10,35 @@ import math
 from .network import CrackNetworkV4
 
 
+def _row_for_integral(
+    pid: int,
+    comp: int,
+    *,
+    poly_panels: List[dict],
+    offsets: List[int],
+    nunk: int,
+) -> np.ndarray:
+    """Linear functional row implementing the integral of the jump density along polyline pid.
+
+    Used identically by build_constraints_half_option_a and build_constraints_half;
+    previously copy-pasted in two nested closures.
+    """
+    pp = poly_panels[int(pid)]
+    off = int(offsets[int(pid)])
+    Np = int(pp["Np"])
+    ds = np.asarray(pp["ds"], float).reshape(-1)
+    tmid = np.asarray(pp["t_mid"], float)
+    nmid = np.asarray(pp["n_mid"], float)
+    r = np.zeros((nunk,), float)
+    for k in range(Np):
+        w = float(ds[k])
+        tx, ty = float(tmid[k, 0]), float(tmid[k, 1])
+        nx, ny = float(nmid[k, 0]), float(nmid[k, 1])
+        r[off + 2 * k + 0] += (nx if comp == 0 else ny) * w  # bI
+        r[off + 2 * k + 1] += (tx if comp == 0 else ty) * w  # bII
+    return r
+
+
 def build_constraints_full(
     *,
     poly_panels: List[dict],
@@ -108,21 +137,7 @@ def build_constraints_half_option_a(
         return r
 
     def row_for_integral(pid: int, comp: int) -> np.ndarray:
-        pp = poly_panels[int(pid)]
-        off = int(offsets[int(pid)])
-        Np = int(pp["Np"])
-        ds = np.asarray(pp["ds"], float).reshape(-1)
-        tmid = np.asarray(pp["t_mid"], float)
-        nmid = np.asarray(pp["n_mid"], float)
-
-        r = np.zeros((nunk,), float)
-        for k in range(Np):
-            w = float(ds[k])
-            tx, ty = float(tmid[k, 0]), float(tmid[k, 1])
-            nx, ny = float(nmid[k, 0]), float(nmid[k, 1])
-            r[off + 2 * k + 0] += (nx if comp == 0 else ny) * w  # bI
-            r[off + 2 * k + 1] += (tx if comp == 0 else ty) * w  # bII
-        return r
+        return _row_for_integral(pid, comp, poly_panels=poly_panels, offsets=offsets, nunk=nunk)
 
     def row_for_J_at(pid: int, which: str, comp: int) -> np.ndarray:
         pp = poly_panels[int(pid)]
@@ -266,20 +281,7 @@ def build_constraints_half(
     Crows: List[np.ndarray] = []
 
     def row_for_integral(pid: int, comp: int) -> np.ndarray:
-        pp = poly_panels[int(pid)]
-        off = offsets[int(pid)]
-        Np = int(pp["Np"])
-        ds = np.asarray(pp["ds"], float).reshape(-1)
-        tmid = np.asarray(pp["t_mid"], float)
-        nmid = np.asarray(pp["n_mid"], float)
-        r = np.zeros((nunk,), float)
-        for k in range(Np):
-            w = float(ds[k])
-            tx, ty = float(tmid[k, 0]), float(tmid[k, 1])
-            nx, ny = float(nmid[k, 0]), float(nmid[k, 1])
-            r[off + 2 * k + 0] += (nx if comp == 0 else ny) * w
-            r[off + 2 * k + 1] += (tx if comp == 0 else ty) * w
-        return r
+        return _row_for_integral(pid, comp, poly_panels=poly_panels, offsets=offsets, nunk=nunk)
 
     def row_for_branch_end_J(pid: int, which: str, comp: int) -> np.ndarray:
         r = np.zeros((nunk,), float)
