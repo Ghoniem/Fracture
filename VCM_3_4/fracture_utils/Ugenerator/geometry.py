@@ -156,22 +156,25 @@ class GeometryUtils:
     @staticmethod
     def angle_between_vectors(v1: np.ndarray, v2: np.ndarray) -> float:
         """
-        Calculate angle between two vectors in degrees
-        
+        Calculate angle between two vectors in degrees.
+
+        Returns NaN when either input vector has zero (or sub-eps) length;
+        the angle is undefined for coincident points.
+
         Args:
             v1, v2: Two 2D vectors
-            
+
         Returns:
-            Angle in degrees (0-180)
+            Angle in degrees in [0, 180], or NaN for degenerate input.
         """
-        v1_norm = v1 / np.linalg.norm(v1)
-        v2_norm = v2 / np.linalg.norm(v2)
-        
-        cos_angle = np.clip(np.dot(v1_norm, v2_norm), -1.0, 1.0)
+        n1 = float(np.linalg.norm(v1))
+        n2 = float(np.linalg.norm(v2))
+        if n1 < 1e-30 or n2 < 1e-30:
+            return float("nan")
+
+        cos_angle = np.clip(float(np.dot(v1, v2)) / (n1 * n2), -1.0, 1.0)
         angle_rad = np.arccos(cos_angle)
-        angle_deg = np.rad2deg(angle_rad)
-        
-        return angle_deg
+        return float(np.rad2deg(angle_rad))
     
     @staticmethod
     def minimum_angle_at_junction(junction_pos: np.ndarray, 

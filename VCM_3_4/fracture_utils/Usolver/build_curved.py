@@ -161,7 +161,9 @@ def _eval_cubic_spline(t: np.ndarray, y: np.ndarray, M: np.ndarray, tt: np.ndarr
     idx = np.searchsorted(t, tt, side="right") - 1
     idx = np.clip(idx, 0, len(t) - 2)
 
-    h = t[idx + 1] - t[idx]
+    # Guard against coincident knots: h = t[idx+1] - t[idx] can be 0 when the
+    # caller passes a degenerate parametrization (e.g. two identical vertices).
+    h = np.maximum(t[idx + 1] - t[idx], 1e-30)
     a = (t[idx + 1] - tt) / h
     b = (tt - t[idx]) / h
     S = (
@@ -181,7 +183,7 @@ def _eval_cubic_spline_deriv(t: np.ndarray, y: np.ndarray, M: np.ndarray, tt: np
     idx = np.searchsorted(t, tt, side="right") - 1
     idx = np.clip(idx, 0, len(t) - 2)
 
-    h = t[idx + 1] - t[idx]
+    h = np.maximum(t[idx + 1] - t[idx], 1e-30)
     a = (t[idx + 1] - tt) / h
     b = (tt - t[idx]) / h
     dS = (y[idx + 1] - y[idx]) / h + (h / 6.0) * (-(3 * a * a - 1.0) * M[idx] + (3 * b * b - 1.0) * M[idx + 1])

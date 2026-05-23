@@ -929,14 +929,19 @@ class CrackNetworkGenerator:
                 if len(path) >= 2:
                     break
     
-    def _sample_edge_length(self, mean: float, std: float, 
+    def _sample_edge_length(self, mean: float, std: float,
                            min_val: float, max_val: float) -> float:
-        """Sample edge length from truncated normal distribution"""
-        
-        # Truncated normal
+        """Sample edge length from truncated normal distribution.
+
+        Degenerates to ``mean`` (clipped to [min_val, max_val]) when std == 0,
+        avoiding the divide-by-zero in the truncated-normal bounds.
+        """
+        if std <= 0.0:
+            return float(np.clip(mean, min_val, max_val))
+
         a = (min_val - mean) / std
         b = (max_val - mean) / std
-        
+
         length = truncnorm.rvs(a, b, loc=mean, scale=std, random_state=self.rng)
         return length
     

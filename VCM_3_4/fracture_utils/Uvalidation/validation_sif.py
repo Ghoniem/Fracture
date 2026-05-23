@@ -46,8 +46,17 @@ class SIFSweepResult:
 
 
 def _err_pct(num: float, ana: float, eps: float = 1e-14) -> float:
-    denom = ana if abs(ana) > eps else (np.sign(ana) * eps + eps)
-    return float(100.0 * (num - ana) / denom)
+    """Relative percentage error, NaN when the analytical value cannot anchor one.
+
+    The old implementation fabricated a tiny denominator (sign * eps + eps) when
+    |ana| <= eps, which silently produced enormous percentage errors for cases
+    like pure Mode I where KII_ana == 0 — making the K_II validation columns
+    useless. Returning NaN is honest: downstream consumers use nanmean/nanstd
+    and will simply skip these rows.
+    """
+    if abs(ana) <= eps:
+        return float("nan")
+    return float(100.0 * (num - ana) / ana)
 
 
 def run_sif_sweep(
