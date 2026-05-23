@@ -179,14 +179,21 @@ class CircularArc(BoundarySegment):
                 start = self.start_angle % (2 * np.pi)
                 end = self.end_angle % (2 * np.pi)
                 
-                # Check if angle is within arc range
+                # Check if angle is within arc range. We MUST compute t_arc against
+                # the same normalized [0, 2π) angles, otherwise raw start_angle/end_angle
+                # outside [0, 2π) corrupt the parametrization.
                 if start <= end:
                     if start <= angle <= end:
-                        t_arc = (angle - self.start_angle) / (self.end_angle - self.start_angle)
+                        span = end - start
+                        t_arc = (angle - start) / span if span > 0.0 else 0.0
                         intersections.append((t_arc, point))
                 else:  # Arc crosses 0/2π
                     if angle >= start or angle <= end:
-                        t_arc = (angle - self.start_angle) / (self.end_angle - self.start_angle)
+                        span = (2 * np.pi - start) + end
+                        if angle >= start:
+                            t_arc = (angle - start) / span
+                        else:
+                            t_arc = ((2 * np.pi - start) + angle) / span
                         intersections.append((t_arc, point))
         
         return intersections

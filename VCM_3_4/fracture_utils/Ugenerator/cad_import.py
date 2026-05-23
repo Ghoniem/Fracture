@@ -97,39 +97,40 @@ class BezierCurve(BoundarySegment):
 
 
 class SplineCurve(BoundarySegment):
-    """B-spline curve boundary segment"""
-    
-    def __init__(self, control_points: List[np.ndarray], 
+    """Piecewise-linear curve through control points (NOT a true B-spline).
+
+    The class name and ``degree`` argument are kept for API compatibility, but
+    ``point_at`` performs linear interpolation between consecutive control
+    points, i.e. the curve is the control polygon itself. ``degree`` and
+    ``knots`` are stored but not used by the evaluator. Replace ``point_at``
+    with a real B-spline evaluation (e.g. ``scipy.interpolate.BSpline``) if a
+    smooth curve is required.
+    """
+
+    def __init__(self, control_points: List[np.ndarray],
                  degree: int = 3, label: str = "boundary"):
         """
-        B-spline curve
-        
         Args:
-            control_points: List of control points
-            degree: Spline degree (typically 3 for cubic)
+            control_points: List of control points (the curve passes through these).
+            degree: Stored for API compatibility; ignored by the linear evaluator.
             label: Boundary label
         """
         super().__init__(label)
         self.control_points = [np.array(p) for p in control_points]
         self.degree = degree
         self.n_control = len(control_points)
-        
-        # Generate uniform knot vector
+
+        # Uniform knot vector kept for API compatibility; unused below.
         n_knots = self.n_control + self.degree + 1
         self.knots = np.linspace(0, 1, n_knots)
-    
+
     def point_at(self, t: float) -> np.ndarray:
-        """Evaluate B-spline at parameter t (simplified for uniform knots)"""
-        # For simplicity, approximate with Catmull-Rom or linear interpolation
-        # Full B-spline evaluation requires scipy or manual implementation
+        """Linear interpolation along the control polygon at parameter t in [0, 1]."""
         t = np.clip(t, 0, 1)
-        
-        # Linear interpolation through control points
         scaled_t = t * (self.n_control - 1)
         idx = int(np.floor(scaled_t))
         idx = min(idx, self.n_control - 2)
         local_t = scaled_t - idx
-        
         return (1 - local_t) * self.control_points[idx] + local_t * self.control_points[idx + 1]
     
     def tangent_at(self, t: float) -> np.ndarray:

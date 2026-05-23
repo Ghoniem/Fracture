@@ -161,30 +161,38 @@ class CandidateEvaluator:
         if self.enable_ne_half_escalation:
             n_try = 4
 
-        for _ in range(n_try):
-            try:
-                KI, KII, meta = self._euclid_tip_fit(res, tip)
-                last_err = None
-                break
-            except Exception as e:
-                last_err = e
-                msg = str(e).lower()
-                if (not self.enable_ne_half_escalation) or ("window too small" not in msg):
+        # ne_half escalation is per-tip: temporarily bump solver_kwargs while retrying,
+        # then restore. Without restore, every subsequent tip evaluation would inherit
+        # the escalated value and silently consume far more memory / runtime.
+        original_ne_half = self.solver_kwargs.get("ne_half", None)
+        try:
+            for _ in range(n_try):
+                try:
+                    KI, KII, meta = self._euclid_tip_fit(res, tip)
+                    last_err = None
                     break
+                except Exception as e:
+                    last_err = e
+                    msg = str(e).lower()
+                    if (not self.enable_ne_half_escalation) or ("window too small" not in msg):
+                        break
 
-                # escalate ne_half and re-solve based on calc.net
-                ne_half = int(self.solver_kwargs.get("ne_half", 60))
-                ne_half_new = min(self.ne_half_max, max(ne_half + 10, 2 * ne_half))
-                if ne_half_new <= ne_half:
-                    break
-                self.solver_kwargs["ne_half"] = ne_half_new
+                    ne_half = int(self.solver_kwargs.get("ne_half", 60))
+                    ne_half_new = min(self.ne_half_max, max(ne_half + 10, 2 * ne_half))
+                    if ne_half_new <= ne_half:
+                        break
+                    self.solver_kwargs["ne_half"] = ne_half_new
 
-                calc = getattr(res, "calc", None)
-                network = getattr(calc, "net", None) or getattr(calc, "network", None)
-                if network is None:
-                    break
-                # res becomes new results
-                res = self.solve_results(network)
+                    calc = getattr(res, "calc", None)
+                    network = getattr(calc, "net", None) or getattr(calc, "network", None)
+                    if network is None:
+                        break
+                    res = self.solve_results(network)
+        finally:
+            if original_ne_half is None:
+                self.solver_kwargs.pop("ne_half", None)
+            else:
+                self.solver_kwargs["ne_half"] = original_ne_half
 
         if last_err is not None:
             raise last_err
