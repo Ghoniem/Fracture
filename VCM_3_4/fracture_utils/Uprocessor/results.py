@@ -297,7 +297,7 @@ class DCEResultsNetworkV4:
         enforce_global_tip_zero: bool = True,
     ):
         info = self._extract_polyline_meta_for_edge(edge_index)
-        solp = info["solp"]
+        pid = info["pid"]; solp = info["solp"]
         Ltot = info["Ltot"]; s0 = info["s0"]; Le = info["Le"]
         edge = info["edge"]; dir_sign = info["dir_sign"]
         a_edge = 0.5 * Le
