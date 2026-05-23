@@ -854,10 +854,14 @@ class PKProcessor:
             eyy = (syy - nu*sxx)/E
             exy = (1.0+nu)/E * sxy
         else:
-            Eprime = E/(1.0-nu**2)
-            exx = (sxx - nu*syy)/Eprime
-            eyy = (syy - nu*sxx)/Eprime
-            exy = (1.0+nu)/Eprime * sxy
+            # Plane strain (ezz = 0). Direct (E, nu) form, no substituted-constants
+            # tricks: the diagonal terms pick up a (1-nu) inside the bracket and the
+            # whole thing scales by (1+nu)/E. The shear coupling is identical to
+            # plane stress because G = E / [2*(1+nu)] is unchanged by the
+            # plane-strain reduction.
+            exx = (1.0+nu)/E * ((1.0-nu)*sxx - nu*syy)
+            eyy = (1.0+nu)/E * ((1.0-nu)*syy - nu*sxx)
+            exy = (1.0+nu)/E * sxy
 
         W = 0.5*(sxx*exx + syy*eyy + 2.0*sxy*exy)
 
