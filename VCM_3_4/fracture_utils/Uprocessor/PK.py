@@ -877,7 +877,12 @@ class PKProcessor:
         tx = sxx*nx + sxy*ny
         ty = sxy*nx + syy*ny
 
-        integrand = W*nx - (tx*uxd + ty*uyd)
+        # J = integral over contour of (W * (n . e_crack) - t_i * du_i/dx_crack) ds.
+        # The first term uses the dot product of the outward normal with the local
+        # crack tangent ex, not the global nx. For x-aligned cracks (ex = (1, 0))
+        # the two collapse to nx, but for inclined/kinked tips they differ.
+        n_dot_ex = nx*ex[0] + ny*ex[1]
+        integrand = W*n_dot_ex - (tx*uxd + ty*uyd)
         return float(np.sum(integrand) * ds)
 
     def K_from_J_contour(
