@@ -323,8 +323,11 @@ def _reconstruct_jump(solp: dict) -> tuple[np.ndarray, np.ndarray]:
             J[0, :] = J0[:2]
         else:
             J[0, :] = 0.0
+    # Panel between node i-1 and node i contributes via incr[i-1] (left-endpoint
+    # over the arriving panel). The previous incr[i] read the WRONG panel and
+    # silently skipped incr[0], shifting every node's jump by one panel.
     for i in range(1, N):
-        J[i, :] = J[i - 1, :] - incr[i, :]
+        J[i, :] = J[i - 1, :] - incr[i - 1, :]
     return P, J
 
 

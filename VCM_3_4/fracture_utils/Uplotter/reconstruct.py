@@ -107,9 +107,14 @@ def reconstruct_cod_csd_parametrized_smoothed(
                 J_nodes = J_nodes - alpha * J_end.reshape(1, 2)
 
     else:
+        # FULL crack mode: J integrates from start node along the polyline,
+        # consuming one panel's contribution per step. The sign must match
+        # the canonical reference in Uprocessor.results.reconstruct_cod_csd_parametrized
+        # (and diagnostics.J_at_vertex), which both use J -= dJ. The previous
+        # +dJ here inverted COD/CSD on full (non-symmetric) crack runs.
         for i in range(Np):
             dJ = (bII[i] * t_col[i] + bI[i] * n_col[i]) * float(ds[i])
-            J_nodes[i + 1] = J_nodes[i] + dJ
+            J_nodes[i + 1] = J_nodes[i] - dJ
 
         if enforce_global_tip_zero and Ltot > 0:
             J_end = J_nodes[-1].copy()
