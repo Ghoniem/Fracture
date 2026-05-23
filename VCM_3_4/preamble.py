@@ -1,5 +1,5 @@
 """
-Notebook preamble (VCM_2_1)
+Notebook preamble (VCM_3_4)
 
 Curated high-frequency helpers for notebooks.
 This file intentionally targets the current module names in this repo.
@@ -168,11 +168,6 @@ sif_from_cod_fit = _get_attr(
     "sif_from_cod_fit",
     _missing_function("sif_from_cod_fit", "Expected in fracture_utils.Uprocessor.SIF_cod."),
 )
-solve_K = _get_attr(
-    sif_cod_mod,
-    "solve_K",
-    _missing_function("solve_K", "This branch provides solve_K_polyline in SIF_cod."),
-)
 solve_K_polyline = _get_attr(
     sif_cod_mod,
     "solve_K_polyline",
@@ -283,16 +278,6 @@ CODSweepResult = _get_attr(val_cod_mod, "CODSweepResult")
 run_cod_sweep = _get_attr(val_cod_mod, "run_cod_sweep")
 plot_cod_overlay = _get_attr(val_cod_mod, "plot_cod_overlay")
 plot_cod_error_vs_knob = _get_attr(val_cod_mod, "plot_cod_error_vs_knob")
-plot_cod_error_summary = _get_attr(
-    val_cod_mod,
-    "plot_cod_error_summary",
-    _missing_function(
-        "plot_cod_error_summary",
-        "This module currently exposes plot_cod_overlay and plot_cod_error_vs_knob.",
-    ),
-)
-
-
 __all__ = [
     "np",
     "plt",
@@ -331,7 +316,6 @@ __all__ = [
     "DCEResultsNetworkV4",
     "cotterell_rice_K",
     "sif_from_cod_fit",
-    "solve_K",
     "solve_K_polyline",
     "rotate_sifs",
     "euclid_tip_fit_from_edge",
@@ -358,5 +342,4 @@ __all__ = [
     "run_cod_sweep",
     "plot_cod_overlay",
     "plot_cod_error_vs_knob",
-    "plot_cod_error_summary",
 ]

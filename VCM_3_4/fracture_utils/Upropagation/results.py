@@ -1,11 +1,16 @@
-"""Result containers and diagnostics for crack propagation."""
+"""Result containers for crack propagation.
+
+Only ``TrialRecord`` is used by the propagation pipeline today (consumed by
+``step_control``). The propagator emits its own ``TipPropagationReport`` and
+``PropagationResult`` dataclasses; the unused duplicates that previously lived
+here were deleted to remove the confusion of two same-named dataclasses with
+incompatible field signatures.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
-
-import numpy as np
+from typing import Any, Dict
 
 @dataclass
 class TrialRecord:
@@ -14,27 +19,4 @@ class TrialRecord:
     theta: float
     keff: float
     accepted: bool
-    meta: Dict[str, Any] = field(default_factory=dict)
-
-@dataclass
-class TipPropagationReport:
-    pid: int
-    which: str
-    grew: bool
-    reason: str
-    Kc: float
-    KI: float
-    KII: float
-    keff: float
-    theta0: float
-    f_accepted: Optional[float] = None
-    delta_a: Optional[float] = None
-    theta_accepted: Optional[float] = None
-    trials: List[TrialRecord] = field(default_factory=list)
-
-@dataclass
-class PropagationResult:
-    network_new: Any
-    base_solution: Dict[str, Any]
-    reports: List[TipPropagationReport] = field(default_factory=list)
     meta: Dict[str, Any] = field(default_factory=dict)

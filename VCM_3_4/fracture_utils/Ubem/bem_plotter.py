@@ -73,8 +73,7 @@ def plot_centerline_stresses_circle(
     if analytical_sigma_yy_over_P is not None:
         ax.axhline(analytical_sigma_yy_over_P, linestyle=":", linewidth=1.5, alpha=0.8,
                    label=f"σ_yy Analytical = {analytical_sigma_yy_over_P:.3f}P")
-    if True:
-        ax.axhline(0.0, linestyle="--", linewidth=0.8, alpha=0.3)
+    ax.axhline(0.0, linestyle="--", linewidth=0.8, alpha=0.3)
     ax.set_xlabel("x/R")
     ax.set_ylabel("Stress" if normalize_by is None else "Stress / P")
     ax.set_title("Stress Along Horizontal Centerline (y=0)")

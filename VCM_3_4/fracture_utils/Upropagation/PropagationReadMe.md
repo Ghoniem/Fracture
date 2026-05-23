@@ -10,7 +10,6 @@ fracture_utils/
     __init__.py                 # empty (per your requirement)
 
     config.py                   # dataclasses: tolerances, defaults, run options
-    context.py                  # shared objects: solver hooks, caches, logging
     toughness.py                # fracture toughness field interface + implementations
     tip_state.py                # tip identification + local geometry (tangent, arclength)
     direction.py                # propagation direction law (MTS, etc.)
