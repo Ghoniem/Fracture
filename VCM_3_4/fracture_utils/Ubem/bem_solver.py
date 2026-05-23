@@ -494,8 +494,13 @@ class BEMSolver2D:
 
         pure_neumann = all(s.is_traction for s in self.segs)
         if pure_neumann:
-            # stabilize rigid-body modes (mean ux, mean uy, mean rotation) = 0
-            w = 1e6
+            # Stabilize rigid-body modes (mean ux, mean uy, mean rotation) = 0.
+            # Scale the penalty by the system diagonal so the constraints stay
+            # well-conditioned regardless of problem stiffness; a hard-coded
+            # w = 1e6 silently degraded for stiffness regimes far from the
+            # original calibration.
+            diag_scale = float(np.max(np.abs(np.diag(A)))) if N > 0 else 1.0
+            w = 1.0e6 * max(diag_scale, 1.0)
             A_aug = np.zeros((2 * N + 3, 2 * N), dtype=float)
             rhs_aug = np.zeros((2 * N + 3,), dtype=float)
             A_aug[:2 * N, :] = A
