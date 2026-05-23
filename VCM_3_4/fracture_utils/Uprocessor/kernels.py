@@ -1,7 +1,19 @@
-"""Elastic kernels used by results post-processing (u and stress)."""
+"""Elastic kernels used by results post-processing (u and stress).
+
+The edge-dislocation displacement and stress kernels are written in their
+plane-strain form. For plane stress the standard substitution is
+``nu -> nu / (1 + nu)``; setting ``plane_stress=True`` applies it. Default
+remains plane strain to preserve current behaviour.
+"""
 from __future__ import annotations
 import numpy as np
 import math
+
+
+def _nu_eff(nu: float, plane_stress: bool) -> float:
+    """Plane-stress/plane-strain effective Poisson ratio for dislocation kernels."""
+    return float(nu) / (1.0 + float(nu)) if plane_stress else float(nu)
+
 
 def applied_tensor(applied) -> np.ndarray:
     if hasattr(applied, "tensor") and callable(applied.tensor):
@@ -10,10 +22,13 @@ def applied_tensor(applied) -> np.ndarray:
                      [float(applied.sigma_xy), float(applied.sigma_yy)]], float)
 
 
-def edge_dislocation_u(dx: np.ndarray, dy: np.ndarray, dBx: float, dBy: float, nu: float):
+def edge_dislocation_u(
+    dx: np.ndarray, dy: np.ndarray, dBx: float, dBy: float, nu: float,
+    *, plane_stress: bool = False,
+):
     dx = np.asarray(dx, float)
     dy = np.asarray(dy, float)
-    nu = float(nu)
+    nu = _nu_eff(nu, plane_stress)
 
     eps = 1e-30
     r2 = dx*dx + dy*dy + eps
@@ -36,10 +51,14 @@ def edge_dislocation_u(dx: np.ndarray, dy: np.ndarray, dBx: float, dBy: float, n
     return ux, uy
 
 
-def stress_edge_dislocation(dx: np.ndarray, dy: np.ndarray, dBx: float, dBy: float, mu: float, nu: float):
+def stress_edge_dislocation(
+    dx: np.ndarray, dy: np.ndarray, dBx: float, dBy: float, mu: float, nu: float,
+    *, plane_stress: bool = False,
+):
     dx = np.asarray(dx, float)
     dy = np.asarray(dy, float)
-    mu = float(mu); nu = float(nu)
+    mu = float(mu)
+    nu = _nu_eff(nu, plane_stress)
 
     eps = 1e-30
     coef = mu / (2.0*math.pi*(1.0 - nu))

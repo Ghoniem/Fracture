@@ -1,12 +1,24 @@
-"""Elastic kernels used by the solver (stress from differential edge dislocation)."""
+"""Elastic kernels used by the solver (stress from differential edge dislocation).
+
+Plane-strain forms; set ``plane_stress=True`` to apply ``nu -> nu / (1 + nu)``
+and obtain the plane-stress equivalents.
+"""
 from __future__ import annotations
 import numpy as np
 import math
 
-def edge_dislocation_u(dx: np.ndarray, dy: np.ndarray, dBx: float, dBy: float, nu: float):
+
+def _nu_eff(nu: float, plane_stress: bool) -> float:
+    return float(nu) / (1.0 + float(nu)) if plane_stress else float(nu)
+
+
+def edge_dislocation_u(
+    dx: np.ndarray, dy: np.ndarray, dBx: float, dBy: float, nu: float,
+    *, plane_stress: bool = False,
+):
     dx = np.asarray(dx, float)
     dy = np.asarray(dy, float)
-    nu = float(nu)
+    nu = _nu_eff(nu, plane_stress)
 
     eps = 1e-30
     r2 = dx * dx + dy * dy + eps
@@ -29,10 +41,14 @@ def edge_dislocation_u(dx: np.ndarray, dy: np.ndarray, dBx: float, dBy: float, n
     return ux, uy
 
 
-def stress_edge_dislocation(dx: np.ndarray, dy: np.ndarray, dBx: float, dBy: float, mu: float, nu: float):
+def stress_edge_dislocation(
+    dx: np.ndarray, dy: np.ndarray, dBx: float, dBy: float, mu: float, nu: float,
+    *, plane_stress: bool = False,
+):
     dx = np.asarray(dx, float)
     dy = np.asarray(dy, float)
-    mu = float(mu); nu = float(nu)
+    mu = float(mu)
+    nu = _nu_eff(nu, plane_stress)
 
     eps = 1e-30
     coef = mu / (2.0*math.pi*(1.0 - nu))

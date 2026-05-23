@@ -586,6 +586,7 @@ class DCEResultsNetworkV4:
 
         E = float(self.calc.material.E)
         nu = float(self.calc.material.nu)
+        ps = bool(getattr(self.calc.material, "plane_stress", False))
         mu = E / (2.0*(1.0+nu))
 
         for poly in self.sol.get("polyline_solutions", []):
@@ -611,7 +612,7 @@ class DCEResultsNetworkV4:
                         dB = (bii * t0 + bi * n0) * float(wq)
                         dx = Xg - float(x0[0])
                         dy = Yg - float(x0[1])
-                        a, b, c = stress_edge_dislocation(dx, dy, float(dB[0]), float(dB[1]), mu, nu)
+                        a, b, c = stress_edge_dislocation(dx, dy, float(dB[0]), float(dB[1]), mu, nu, plane_stress=ps)
                         sxx += a
                         syy += b
                         sxy += c
@@ -625,7 +626,7 @@ class DCEResultsNetworkV4:
                     dB = (bii * t0 + bi * n0) * float(w)
                     dx = Xg - float(x0[0])
                     dy = Yg - float(x0[1])
-                    a, b, c = stress_edge_dislocation(dx, dy, float(dB[0]), float(dB[1]), mu, nu)
+                    a, b, c = stress_edge_dislocation(dx, dy, float(dB[0]), float(dB[1]), mu, nu, plane_stress=ps)
                     sxx += a
                     syy += b
                     sxy += c
@@ -662,6 +663,7 @@ class DCEResultsNetworkV4:
 
         E = float(self.calc.material.E)
         nu = float(self.calc.material.nu)
+        ps = bool(getattr(self.calc.material, "plane_stress", False))
         mu = E / (2.0*(1.0+nu))
 
         for pid, poly in enumerate(self.sol.get("polyline_solutions", [])):
@@ -689,7 +691,7 @@ class DCEResultsNetworkV4:
                         dB = (bii * t0 + bi * n0) * float(wq)
                         dx = Xg - float(x0[0])
                         dy = Yg - float(x0[1])
-                        a, b, c = stress_edge_dislocation(dx, dy, float(dB[0]), float(dB[1]), mu, nu)
+                        a, b, c = stress_edge_dislocation(dx, dy, float(dB[0]), float(dB[1]), mu, nu, plane_stress=ps)
                         sxx += a
                         syy += b
                         sxy += c
@@ -702,7 +704,7 @@ class DCEResultsNetworkV4:
                     dB = (bii * t0 + bi * n0) * float(w)
                     dx = Xg - float(x0[0])
                     dy = Yg - float(x0[1])
-                    a, b, c = stress_edge_dislocation(dx, dy, float(dB[0]), float(dB[1]), mu, nu)
+                    a, b, c = stress_edge_dislocation(dx, dy, float(dB[0]), float(dB[1]), mu, nu, plane_stress=ps)
                     sxx += a
                     syy += b
                     sxy += c
@@ -752,6 +754,7 @@ class DCEResultsNetworkV4:
 
         E = float(self.calc.material.E)
         nu = float(self.calc.material.nu)
+        ps = bool(getattr(self.calc.material, "plane_stress", False))
         mu = E / (2.0 * (1.0 + nu))
 
         for p, poly in enumerate(self.sol.get("polyline_solutions", [])):
@@ -778,7 +781,7 @@ class DCEResultsNetworkV4:
                         dB = (bii * t0 + bi * n0) * float(wq)
                         dx = Xg - float(x0[0])
                         dy = Yg - float(x0[1])
-                        a, b, c = stress_edge_dislocation(dx, dy, float(dB[0]), float(dB[1]), mu, nu)
+                        a, b, c = stress_edge_dislocation(dx, dy, float(dB[0]), float(dB[1]), mu, nu, plane_stress=ps)
                         sxx += a
                         syy += b
                         sxy += c
@@ -793,7 +796,7 @@ class DCEResultsNetworkV4:
                     dB = (bii * t0 + bi * n0) * float(w)
                     dx = Xg - float(x0[0])
                     dy = Yg - float(x0[1])
-                    a, b, c = stress_edge_dislocation(dx, dy, float(dB[0]), float(dB[1]), mu, nu)
+                    a, b, c = stress_edge_dislocation(dx, dy, float(dB[0]), float(dB[1]), mu, nu, plane_stress=ps)
                     sxx += a
                     syy += b
                     sxy += c
@@ -841,6 +844,7 @@ class DCEResultsNetworkV4:
         uy = np.zeros_like(Xg)
 
         nu = float(self.calc.material.nu)
+        ps = bool(getattr(self.calc.material, "plane_stress", False))
 
         for poly in self.sol.get("polyline_solutions", []):
             bI = np.asarray(poly["bI"], float)
@@ -854,7 +858,7 @@ class DCEResultsNetworkV4:
                 dB = (bii * t0 + bi * n0) * float(w)
                 dx = Xg - float(x0[0])
                 dy = Yg - float(x0[1])
-                dux, duy = edge_dislocation_u(dx, dy, float(dB[0]), float(dB[1]), nu)
+                dux, duy = edge_dislocation_u(dx, dy, float(dB[0]), float(dB[1]), nu, plane_stress=ps)
                 ux += dux; uy += duy
 
         return ux, uy

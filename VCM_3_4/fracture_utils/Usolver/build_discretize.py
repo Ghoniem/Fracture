@@ -340,6 +340,7 @@ def assemble_operator(
 
     E = float(material.E)
     nu = float(material.nu)
+    ps = bool(getattr(material, "plane_stress", False))
     mu = E / (2.0 * (1.0 + nu))
     # Applied stress can be constant or spatially varying.
     # Use applied.tensor_at(X) so uncoupled BEM fields are supported.
@@ -377,14 +378,14 @@ def assemble_operator(
                         dy = float(x_i[1] - xs[1])
 
                         dB = ns * float(ww)
-                        sxx, syy, sxy = stress_edge_dislocation(dx, dy, float(dB[0]), float(dB[1]), mu, nu)
+                        sxx, syy, sxy = stress_edge_dislocation(dx, dy, float(dB[0]), float(dB[1]), mu, nu, plane_stress=ps)
                         tx = float(sxx * n_i[0] + sxy * n_i[1])
                         ty = float(sxy * n_i[0] + syy * n_i[1])
                         tn_sum_I += float(n_i[0] * tx + n_i[1] * ty)
                         ts_sum_I += float(t_i[0] * tx + t_i[1] * ty)
 
                         dB2 = ts * float(ww)
-                        sxx, syy, sxy = stress_edge_dislocation(dx, dy, float(dB2[0]), float(dB2[1]), mu, nu)
+                        sxx, syy, sxy = stress_edge_dislocation(dx, dy, float(dB2[0]), float(dB2[1]), mu, nu, plane_stress=ps)
                         tx = float(sxx * n_i[0] + sxy * n_i[1])
                         ty = float(sxy * n_i[0] + syy * n_i[1])
                         tn_sum_II += float(n_i[0] * tx + n_i[1] * ty)
@@ -431,6 +432,7 @@ def assemble_boundary_traction_operator(
 
     E = float(material.E)
     nu = float(material.nu)
+    ps = bool(getattr(material, "plane_stress", False))
     mu = E / (2.0 * (1.0 + nu))
 
     for ib in range(nb):
@@ -465,13 +467,13 @@ def assemble_boundary_traction_operator(
 
                     # Mode I basis contribution (B along local normal)
                     dB = ns * w
-                    sxx, syy, sxy = stress_edge_dislocation(dx, dy, float(dB[0]), float(dB[1]), mu, nu)
+                    sxx, syy, sxy = stress_edge_dislocation(dx, dy, float(dB[0]), float(dB[1]), mu, nu, plane_stress=ps)
                     tx_I += float(sxx * nx + sxy * ny)
                     ty_I += float(sxy * nx + syy * ny)
 
                     # Mode II basis contribution (B along local tangent)
                     dB2 = ts * w
-                    sxx, syy, sxy = stress_edge_dislocation(dx, dy, float(dB2[0]), float(dB2[1]), mu, nu)
+                    sxx, syy, sxy = stress_edge_dislocation(dx, dy, float(dB2[0]), float(dB2[1]), mu, nu, plane_stress=ps)
                     tx_II += float(sxx * nx + sxy * ny)
                     ty_II += float(sxy * nx + syy * ny)
 
@@ -508,6 +510,7 @@ def assemble_boundary_displacement_operator(
     nb = int(Xb.shape[0])
     Mu = np.zeros((2 * nb, int(nunk)), float)
     nu = float(material.nu)
+    ps = bool(getattr(material, "plane_stress", False))
 
     for ib in range(nb):
         x = float(Xb[ib, 0])
@@ -538,13 +541,13 @@ def assemble_boundary_displacement_operator(
 
                     # Mode I basis contribution (B along local normal)
                     dB = ns * w
-                    ux, uy = edge_dislocation_u(dx, dy, float(dB[0]), float(dB[1]), nu)
+                    ux, uy = edge_dislocation_u(dx, dy, float(dB[0]), float(dB[1]), nu, plane_stress=ps)
                     ux_I += float(ux)
                     uy_I += float(uy)
 
                     # Mode II basis contribution (B along local tangent)
                     dB2 = ts * w
-                    ux, uy = edge_dislocation_u(dx, dy, float(dB2[0]), float(dB2[1]), nu)
+                    ux, uy = edge_dislocation_u(dx, dy, float(dB2[0]), float(dB2[1]), nu, plane_stress=ps)
                     ux_II += float(ux)
                     uy_II += float(uy)
 
