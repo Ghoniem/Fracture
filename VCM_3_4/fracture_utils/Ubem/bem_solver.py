@@ -189,6 +189,37 @@ def kelvin_U(field: Tuple[float, float],
     return coeff * (kappa * ln1r * np.eye(2) + rr)
 
 
+def kelvin_U_self_panel(seg: Segment, *,
+                        E: float, nu: float, plane_strain: bool) -> np.ndarray:
+    """Closed-form Kelvin-U integral over a straight panel evaluated at its midpoint.
+
+    The Kelvin-U kernel has a log(1/r) singularity at the source point. When
+    the field point coincides with the panel midpoint, the kernel can be
+    integrated analytically along the panel. Substitute s_local in [-1, 1]
+    so r(s) = (L/2)*|s|, and write log(1/r) = log(2/L) - log(|s|). Then
+
+        ∫_{-1}^{1} log(1/r) ds       = 2*log(2/L) + 2
+        ∫_{-1}^{1} (r_i r_k / r^2) ds = 2 * t_i t_k        (constant: r is along t)
+        jac                          = L/2
+
+    giving
+
+        ∫ U ds * jac = L / (8πG(1-ν)) * [κ (log(2/L) + 1) I + t t^T].
+
+    This avoids the few-percent error that plain Gauss-Legendre quadrature
+    incurs on the log-singular self panel (which the previous assembly used
+    with a hard-coded 1e-16*L floor on r).
+    """
+    L = float(seg.length)
+    G = shear_modulus(E, nu)
+    coeff = 1.0 / (8.0 * math.pi * G * (1.0 - nu))
+    kappa = kappa_from_nu(nu, plane_strain)
+    tx, ty = seg.tx, seg.ty
+    tt = np.array([[tx * tx, tx * ty],
+                   [tx * ty, ty * ty]], dtype=float)
+    return L * coeff * (kappa * (math.log(2.0 / L) + 1.0) * np.eye(2) + tt)
+
+
 def kelvin_T(field: Tuple[float, float],
              source: Tuple[float, float],
              n_source: Tuple[float, float],
@@ -421,6 +452,15 @@ class BEMSolver2D:
             xi, yi = si.xm, si.ym
 
             for j, sj in enumerate(self.segs):
+                if i == j:
+                    # Log-singular self-integral handled in closed form so the
+                    # quadrature doesn't lose accuracy on short panels.
+                    G[2 * i:2 * i + 2, 2 * j:2 * j + 2] = kelvin_U_self_panel(
+                        sj, E=self.E, nu=self.nu, plane_strain=self.plane_strain,
+                    )
+                    # H diagonal handled below by row-sum (rigid-body) closure.
+                    continue
+
                 Gij = np.zeros((2, 2), dtype=float)
                 Hij = np.zeros((2, 2), dtype=float)
 
@@ -433,14 +473,12 @@ class BEMSolver2D:
                                  plane_strain=self.plane_strain, r_floor=rf)
                     Gij += U * (w * jac)
 
-                    if i != j:
-                        T = kelvin_T(field=(xi, yi), source=(xq, yq), n_source=(sj.nx, sj.ny),
-                                     E=self.E, nu=self.nu, plane_strain=self.plane_strain, r_floor=rf)
-                        Hij += T * (w * jac)
+                    T = kelvin_T(field=(xi, yi), source=(xq, yq), n_source=(sj.nx, sj.ny),
+                                 E=self.E, nu=self.nu, plane_strain=self.plane_strain, r_floor=rf)
+                    Hij += T * (w * jac)
 
                 G[2 * i:2 * i + 2, 2 * j:2 * j + 2] = Gij
-                if i != j:
-                    H_off[2 * i:2 * i + 2, 2 * j:2 * j + 2] = Hij
+                H_off[2 * i:2 * i + 2, 2 * j:2 * j + 2] = Hij
 
         # H diagonal by rigid-translation (row-sum) closure:
         # (cI + H) * const_u = 0  for smooth boundary.
