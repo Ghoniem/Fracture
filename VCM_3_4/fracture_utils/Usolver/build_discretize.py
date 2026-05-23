@@ -14,6 +14,7 @@ Geometry evaluation:
 
 from __future__ import annotations
 
+import warnings
 from typing import List, Tuple, Dict
 import math
 import numpy as np
@@ -241,6 +242,28 @@ def discretize_polylines(
             panel_src.append((idx0, idx0 + nq))
             idx0 += nq
 
+        # Warn when the singular tip representation is asked for but the crack
+        # is so short or coarsely panelled that the quadrature weights span a
+        # huge dynamic range -- a known recipe for ill-conditioning. We use the
+        # max/median weight ratio across panels; thresholds chosen so smooth
+        # singular runs stay quiet and clearly degenerate ones surface.
+        wsing_arr = np.array(panel_wsing, float)
+        if use_tip_singular and wsing_arr.size >= 2:
+            med = float(np.median(wsing_arr))
+            mx = float(np.max(wsing_arr))
+            ratio = (mx / med) if med > 0.0 else float("inf")
+            if ratio > 1.0e3:
+                warnings.warn(
+                    "Singular tip representation on polyline pid="
+                    f"{pid} produces extreme quadrature-weight contrast "
+                    f"(max/median = {ratio:.2e}, L = {L:.3e}, Np = {Np}). "
+                    "This usually means the crack is too short or too coarsely "
+                    "panelled for the singular representation; consider "
+                    "representation='regular' or larger ne_half.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+
         poly_panels.append(dict(
             pid=int(pid),
             Np=int(Np),
@@ -259,7 +282,7 @@ def discretize_polylines(
             src_n=np.array(src_n, float),
             src_w=np.array(src_w, float),
             panel_src=panel_src,
-            panel_wsing=np.array(panel_wsing, float),
+            panel_wsing=wsing_arr,
             v_start=int(v_start),
             v_end=int(v_end),
             L=float(L),
