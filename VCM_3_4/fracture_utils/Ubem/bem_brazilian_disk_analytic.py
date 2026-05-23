@@ -83,7 +83,10 @@ def stress_brazilian_disk_point(
     if Dm == 0.0 or Dp == 0.0:
         return Stress(np.nan, np.nan, np.nan)
 
-    pref = -2.0 * P / (np.pi * d * h)
+    # ASTM/textbook convention: P is the total compressive load at each platen,
+    # giving sigma_yy(0,0) = -6P/(pi*D*t) and sigma_xx(0,0) = +2P/(pi*D*t).
+    # Must match the vectorized stress_brazilian_disk below to machine precision.
+    pref = -4.0 * P / (np.pi * d * h)
 
     sxx = pref * (
         (1.0 - zeta) * xi**2 / (Dm**2) +
@@ -164,8 +167,8 @@ def stress_center(*, R: float, P: float, h: float) -> Stress:
     """
     R = float(R); P = float(P); h = float(h)
     d = 2.0 * R
-    sxx = +1.0 * P / (np.pi * d * h)
-    syy = -3.0 * P / (np.pi * d * h)
+    sxx = +2.0 * P / (np.pi * d * h)
+    syy = -6.0 * P / (np.pi * d * h)
     sxy = 0.0
     return Stress(sxx, syy, sxy)
 
