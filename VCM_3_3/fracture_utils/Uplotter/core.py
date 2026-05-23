@@ -20,31 +20,100 @@ class DCEPlotterV4:
         self.calc = results.calc
         self.out_dir = ensure_dir(out_dir)
 
-    def plot_network_graph(self, units: str = "mm", annotate: bool = True):
+    def plot_network_graph(
+        self,
+        units: str = "mm",
+        annotate: bool = True,
+        *,
+        font_size: int = 16,
+        label_offset_frac: float = 0.07,
+    ):
         V = self.calc.network.vertices
         E = self.calc.network.edges
         s = 1e3 if units.lower() == "mm" else 1.0
 
-        fig, ax = plt.subplots(figsize=(6, 6))
-        ax.set_title("Crack Network (Graph)")
+        fig, ax = plt.subplots(figsize=(7, 7))
 
+        vmap = {int(v.id): v for v in V}
+
+        # Bounding-box-based offset so labels never overlap the edges.
+        xs_all = np.array([v.x * s for v in V], dtype=float)
+        ys_all = np.array([v.y * s for v in V], dtype=float)
+        span = float(max(np.ptp(xs_all), np.ptp(ys_all), 1.0))
+        d_off = label_offset_frac * span
+
+        bbox_kwargs = dict(
+            boxstyle="round,pad=0.32",
+            fc="white",
+            ec="0.6",
+            lw=0.6,
+            alpha=0.92,
+        )
+
+        # Edges + perpendicular edge labels
         for e in E:
-            v0 = next(v for v in V if int(v.id) == int(e.v0))
-            v1 = next(v for v in V if int(v.id) == int(e.v1))
-            ax.plot([v0.x * s, v1.x * s], [v0.y * s, v1.y * s], color="k", lw=2)
+            v0 = vmap[int(e.v0)]
+            v1 = vmap[int(e.v1)]
+            x0, y0 = v0.x * s, v0.y * s
+            x1, y1 = v1.x * s, v1.y * s
+            ax.plot([x0, x1], [y0, y1], color="k", lw=2)
             if annotate:
-                xm = 0.5 * (v0.x + v1.x) * s
-                ym = 0.5 * (v0.y + v1.y) * s
-                ax.text(xm, ym, f"e{int(e.id)}", ha="center", va="center")
+                xm, ym = 0.5 * (x0 + x1), 0.5 * (y0 + y1)
+                dx, dy = x1 - x0, y1 - y0
+                L = max(np.hypot(dx, dy), 1e-12)
+                px, py = -dy / L, dx / L  # unit perpendicular
+                ax.text(
+                    xm + d_off * px,
+                    ym + d_off * py,
+                    f"e{int(e.id)}",
+                    ha="center", va="center",
+                    fontsize=font_size,
+                    bbox=bbox_kwargs,
+                )
+
+        # Build vertex incidence so vertex labels can be offset
+        # away from every incident edge.
+        incidence: Dict[int, list] = {int(v.id): [] for v in V}
+        for e in E:
+            incidence[int(e.v0)].append(int(e.v1))
+            incidence[int(e.v1)].append(int(e.v0))
 
         colors = plt.rcParams["axes.prop_cycle"].by_key().get("color", [])
         for i, v in enumerate(V):
-            ax.scatter([v.x * s], [v.y * s], s=50, color=colors[i % len(colors)] if colors else None)
+            vx, vy = v.x * s, v.y * s
+            ax.scatter([vx], [vy], s=70,
+                       color=colors[i % len(colors)] if colors else None,
+                       zorder=4)
             if annotate:
-                ax.text(v.x * s, v.y * s, f"v{int(v.id)}", ha="left", va="bottom")
+                ux, uy = 0.0, 0.0
+                for nb_id in incidence.get(int(v.id), []):
+                    nb_v = vmap.get(nb_id)
+                    if nb_v is None:
+                        continue
+                    dx = nb_v.x * s - vx
+                    dy = nb_v.y * s - vy
+                    L = max(np.hypot(dx, dy), 1e-12)
+                    ux += dx / L
+                    uy += dy / L
+                norm = np.hypot(ux, uy)
+                if norm < 1e-9:
+                    ox, oy = 1.0, 1.0
+                else:
+                    ox, oy = -ux / norm, -uy / norm
+                ax.text(
+                    vx + d_off * ox,
+                    vy + d_off * oy,
+                    f"v{int(v.id)}",
+                    ha="center", va="center",
+                    fontsize=font_size,
+                    fontweight="bold",
+                    bbox=bbox_kwargs,
+                    zorder=5,
+                )
 
-        ax.set_xlabel(f"x [{units}]")
-        ax.set_ylabel(f"y [{units}]")
+        ax.set_xlabel(f"x [{units}]", fontsize=font_size)
+        ax.set_ylabel(f"y [{units}]", fontsize=font_size)
+        ax.tick_params(axis="both", which="major", labelsize=font_size)
         ax.axis("equal")
         ax.grid(True, alpha=0.25)
 

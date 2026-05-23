@@ -32,6 +32,107 @@ except Exception:  # pragma: no cover
 # -----------------------------
 # small utilities
 # -----------------------------
+def _label_network_topology(
+    ax,
+    vertices,
+    edges,
+    sxy: float,
+    *,
+    font_size: int = 16,
+    label_offset_frac: float = 0.07,
+):
+    """Overlay v0/v1/... and e0/e1/... labels on a crack-network plot.
+
+    Edge labels are placed perpendicular to each edge; vertex labels are
+    placed in the wedge opposite the average direction of the incident
+    edges, so they never overlap the lines they belong to. All text is
+    rendered with a white rounded bbox for legibility.
+
+    Parameters
+    ----------
+    ax : matplotlib Axes
+    vertices, edges : iterables of CrackNetworkV4 vertex/edge dataclasses
+    sxy : float, units scale factor (e.g. 1e3 for meters -> mm)
+    font_size : int, font size in points
+    label_offset_frac : float, label offset as fraction of network bbox span
+    """
+    V = list(vertices)
+    E = list(edges)
+    if not V:
+        return
+
+    vmap = {int(v.id): v for v in V}
+
+    xs_all = np.array([v.x * sxy for v in V], dtype=float)
+    ys_all = np.array([v.y * sxy for v in V], dtype=float)
+    span = float(max(np.ptp(xs_all), np.ptp(ys_all), 1.0))
+    d_off = label_offset_frac * span
+
+    bbox_kwargs = dict(
+        boxstyle="round,pad=0.32",
+        fc="white",
+        ec="0.6",
+        lw=0.6,
+        alpha=0.92,
+    )
+
+    # Edge labels offset perpendicular to the edge
+    for e in E:
+        v0 = vmap.get(int(e.v0))
+        v1 = vmap.get(int(e.v1))
+        if v0 is None or v1 is None:
+            continue
+        x0, y0 = v0.x * sxy, v0.y * sxy
+        x1, y1 = v1.x * sxy, v1.y * sxy
+        xm, ym = 0.5 * (x0 + x1), 0.5 * (y0 + y1)
+        dx, dy = x1 - x0, y1 - y0
+        L = max(math.hypot(dx, dy), 1e-12)
+        px, py = -dy / L, dx / L
+        ax.text(
+            xm + d_off * px,
+            ym + d_off * py,
+            f"e{int(e.id)}",
+            ha="center", va="center",
+            fontsize=font_size,
+            bbox=bbox_kwargs,
+            zorder=6,
+        )
+
+    # Vertex incidence so labels can be placed away from incident edges
+    incidence = {int(v.id): [] for v in V}
+    for e in E:
+        incidence[int(e.v0)].append(int(e.v1))
+        incidence[int(e.v1)].append(int(e.v0))
+
+    for v in V:
+        vx, vy = v.x * sxy, v.y * sxy
+        ux, uy = 0.0, 0.0
+        for nb_id in incidence.get(int(v.id), []):
+            nb_v = vmap.get(nb_id)
+            if nb_v is None:
+                continue
+            dx = nb_v.x * sxy - vx
+            dy = nb_v.y * sxy - vy
+            L = max(math.hypot(dx, dy), 1e-12)
+            ux += dx / L
+            uy += dy / L
+        norm = math.hypot(ux, uy)
+        if norm < 1e-9:
+            ox, oy = 1.0, 1.0
+        else:
+            ox, oy = -ux / norm, -uy / norm
+        ax.text(
+            vx + d_off * ox,
+            vy + d_off * oy,
+            f"v{int(v.id)}",
+            ha="center", va="center",
+            fontsize=font_size,
+            fontweight="bold",
+            bbox=bbox_kwargs,
+            zorder=7,
+        )
+
+
 def _deg_map_from_network(net) -> dict[int, int]:
     deg = {int(v.id): 0 for v in getattr(net, "vertices", [])}
     for e in getattr(net, "edges", []):
@@ -276,6 +377,9 @@ class DCEPlotterDeformedV4:
         show: bool = True,
         save: bool = True,
         debug_counts: bool = True,
+        label_topology: bool = True,
+        font_size: int = 16,
+        label_offset_frac: float = 0.07,
     ):
         """
         Plot the deformed crack network using solver-provided jump fields when available.
@@ -325,14 +429,24 @@ class DCEPlotterDeformedV4:
                 except Exception:
                     n_skipped += 1
 
-            ax.set_title(f"Deformed Crack Network (scale={float(scale):.2e})")
-            ax.set_xlabel(f"x [{units}]")
-            ax.set_ylabel(f"y [{units}]")
+            ax.set_xlabel(f"x [{units}]", fontsize=font_size)
+            ax.set_ylabel(f"y [{units}]", fontsize=font_size)
+            ax.tick_params(axis="both", which="major", labelsize=font_size)
             ax.grid(True, alpha=0.35)
             _set_graph_like_limits(ax, Vc * sxy if Vc.size else None)
+            if label_topology:
+                _label_network_topology(
+                    ax,
+                    getattr(net, "vertices", []),
+                    getattr(net, "edges", []),
+                    sxy,
+                    font_size=font_size,
+                    label_offset_frac=label_offset_frac,
+                )
             if debug_counts:
                 ax.text(0.02, 0.98, f"plotted={n_plotted}, skipped={n_skipped}",
-                        transform=ax.transAxes, va="top", ha="left", fontsize=9)
+                        transform=ax.transAxes, va="top", ha="left",
+                        fontsize=max(10, font_size - 4))
             if save:
                 if self.out_dir is None:
                     raise ValueError("out_dir must be set to save figures.")
@@ -533,15 +647,26 @@ class DCEPlotterDeformedV4:
                     gpc = np.vstack([gp, gp[0:1]])
                     ax.plot(gpc[:, 0], gpc[:, 1], "k-", lw=1.0, alpha=0.35)
 # Styling: match network graph look (limits from graph, not from deformation)
-        ax.set_title(f"Deformed Crack Network (junction_model={junction_model}, scale={float(scale):.2e})")
-        ax.set_xlabel(f"x [{units}]")
-        ax.set_ylabel(f"y [{units}]")
+        ax.set_xlabel(f"x [{units}]", fontsize=font_size)
+        ax.set_ylabel(f"y [{units}]", fontsize=font_size)
+        ax.tick_params(axis="both", which="major", labelsize=font_size)
         ax.grid(True, alpha=0.35)
         _set_graph_like_limits(ax, Vc * sxy if Vc.size else None)
 
+        if label_topology:
+            _label_network_topology(
+                ax,
+                getattr(net, "vertices", []),
+                getattr(net, "edges", []),
+                sxy,
+                font_size=font_size,
+                label_offset_frac=label_offset_frac,
+            )
+
         if debug_counts:
             ax.text(0.02, 0.98, f"plotted={n_plotted}, skipped={n_skipped}",
-                    transform=ax.transAxes, va="top", ha="left", fontsize=9)
+                    transform=ax.transAxes, va="top", ha="left",
+                    fontsize=max(10, font_size - 4))
 
         if save:
             if self.out_dir is None:
