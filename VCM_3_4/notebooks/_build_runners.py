@@ -1,15 +1,19 @@
-"""Assembles unified_runner.ipynb from the existing per-case notebooks.
+"""Assembles ValidationRunner.ipynb and Simulations.ipynb from the existing per-case notebooks.
 
-This script is the source-of-truth for how unified_runner.ipynb is built.
-It is committed alongside the notebook so the bundling is reproducible: if
-one of the per-case notebooks evolves, re-run this script to regenerate the
-unified runner.
+This script is the source-of-truth for how the two runner notebooks are
+built. It is committed alongside them so the bundling is reproducible: if
+one of the per-case notebooks evolves, re-run this script to regenerate
+both runners.
 
-The assembly strategy is "function per case, all logic inline": each
-existing notebook's code cells are concatenated, indented under a
-``def run_<case>():`` wrapper, and emitted as a code cell in the unified
-notebook. The cell at the top selects ``CASE`` and the final cell
-dispatches to ``run_<case>()``. State is isolated per case because each
+The case split is intentional:
+
+    Simulations.ipynb  -> every "disk_*" case (production simulations).
+    Validation.ipynb   -> everything else (BEM checks, validation sweeps,
+                          crack-net/graph tools, propagation, diagnostics).
+
+Both notebooks share the same skeleton: a header, a CASE selector with a
+DRY_RUN guard, a common preamble, one ``def run_<case>():`` per case, and a
+dispatcher at the bottom. State is isolated per case because each body
 runs inside its own function scope.
 
 Notebook-level markdown cells from the originals become a docstring at the
@@ -19,22 +23,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import List
 
 
 NB_DIR = Path(__file__).resolve().parent
-CASES = [
-    "bem_displacement",
-    "crack_net",
-    "direct_method_verification",
-    "disk_compression_2",
-    "disk_compression_inclined",
-    "disk_energetics",
-    "disk_experiments",
-    "function_diagnostics",
-    "graph_net",
-    "propagation",
-    "validation",
-]
+
 CASE_TO_FILE = {
     "bem_displacement": "BEM_displacement.ipynb",
     "crack_net": "crack_net.ipynb",
@@ -49,7 +42,13 @@ CASE_TO_FILE = {
     "validation": "validation.ipynb",
 }
 
+SIMULATION_CASES = [c for c in CASE_TO_FILE if c.startswith("disk_")]
+VALIDATION_CASES = [c for c in CASE_TO_FILE if not c.startswith("disk_")]
 
+
+# -----------------------------
+# Cell builders
+# -----------------------------
 def _indent(text: str, prefix: str = "    ") -> str:
     return "\n".join((prefix + line) if line else line for line in text.split("\n"))
 
@@ -64,7 +63,7 @@ def _strip_illegal_function_body_imports(src: str) -> str:
     """Strip imports that aren't allowed inside a function body.
 
     ``from X import *`` is illegal inside a function body, so we hoist
-    ``from preamble import *`` to the common preamble of the unified
+    ``from preamble import *`` to the common preamble of the runner
     notebook and drop the per-case redundant copies. The
     ``graph_utils.crack_network_generator`` import is a stale reference (the
     module does not exist anywhere in the repo) and is dropped silently.
@@ -104,7 +103,6 @@ def _wrap_case(case: str, nb_path: Path) -> dict:
     docstring = "\n\n".join(s.strip() for s in md_chunks if s.strip()) or (
         f"Case extracted from {nb_path.name}."
     )
-    # avoid breaking the docstring if it contains triple quotes
     docstring = docstring.replace('"""', "'''")
 
     body = "\n\n# ---- next cell ----\n\n".join(code_chunks)
@@ -146,25 +144,31 @@ def _code_cell(text: str) -> dict:
     }
 
 
-def build_notebook() -> dict:
+# -----------------------------
+# Notebook assembly
+# -----------------------------
+def build_notebook(cases: List[str], title: str, blurb: str) -> dict:
+    options_inline = " | ".join(cases)
+
     header_md = (
-        "# Unified Runner — VCM 3.4\n"
+        f"# {title} — VCM 3.4\n"
         "\n"
-        "Single entry point for every workflow in this repo. Set `CASE` in the next\n"
-        "cell and run the notebook top to bottom; the dispatcher at the bottom calls\n"
-        "the matching `run_<case>()` function.\n"
+        f"{blurb}\n"
+        "\n"
+        "Set `CASE` in the next cell and run the notebook top to bottom; the\n"
+        "dispatcher at the bottom calls the matching `run_<case>()` function.\n"
         "\n"
         "Available cases (matching the per-case notebooks in this directory):\n"
-        + "".join(f"- `{c}`\n" for c in CASES) +
+        + "".join(f"- `{c}`\n" for c in cases) +
         "\n"
         "Each `run_<case>()` is a faithful inlining of the corresponding notebook's\n"
         "code cells. Markdown cells from the originals become the function docstring.\n"
-        "If a case notebook changes, regenerate this file with `_build_unified_runner.py`.\n"
+        "If a case notebook changes, regenerate this file with `_build_runners.py`.\n"
     )
 
     case_selector = (
         "# Pick which workflow to run. Must be one of the keys in CASES at the bottom.\n"
-        f'CASE = "{CASES[0]}"\n'
+        f'CASE = "{cases[0]}"  # options: {options_inline}\n'
         "\n"
         "# Safety guard: keep DRY_RUN = True the first time you open this notebook so\n"
         "# Run-All only defines the case functions without executing them. Set to\n"
@@ -189,7 +193,7 @@ def build_notebook() -> dict:
         "# cell, which is illegal inside a function body. Hoist that wildcard import\n"
         "# here at module scope so every case function inherits the same namespace,\n"
         "# and the per-case bodies (stripped of their own `from preamble import *`\n"
-        "# lines by _build_unified_runner.py) continue to work unchanged.\n"
+        "# lines by _build_runners.py) continue to work unchanged.\n"
         "from preamble import *  # noqa: F401,F403\n"
         "\n"
         "print(f'Running case: {CASE!r}')\n"
@@ -207,7 +211,7 @@ def build_notebook() -> dict:
                  "is invoked by the dispatcher; the others are defined but not executed.\n"),
     ]
 
-    for case in CASES:
+    for case in cases:
         nb_path = NB_DIR / CASE_TO_FILE[case]
         if not nb_path.exists():
             continue
@@ -216,7 +220,7 @@ def build_notebook() -> dict:
 
     dispatcher = (
         "CASES = {\n"
-        + "".join(f'    "{c}": run_{c},\n' for c in CASES) +
+        + "".join(f'    "{c}": run_{c},\n' for c in cases) +
         "}\n"
         "\n"
         'if CASE not in CASES:\n'
@@ -252,11 +256,33 @@ def build_notebook() -> dict:
 
 
 def main():
-    nb = build_notebook()
-    out = NB_DIR / "unified_runner.ipynb"
-    out.write_text(json.dumps(nb, indent=1), encoding="utf-8")
-    n_cells = len(nb["cells"])
-    print(f"Wrote {out}  ({n_cells} cells, {out.stat().st_size / 1024:.1f} KB)")
+    targets = [
+        (
+            "Simulations.ipynb",
+            "Simulations",
+            "Production simulation runs: Brazilian-disk + crack-network coupling, "
+            "every `disk_*` case from this directory.",
+            SIMULATION_CASES,
+        ),
+        (
+            # Named ValidationRunner.ipynb to avoid colliding with the source
+            # validation.ipynb on case-insensitive filesystems (Windows, default macOS).
+            "ValidationRunner.ipynb",
+            "Validation Runner",
+            "Validation, verification, and exploration cases: BEM checks, COD/SIF "
+            "convergence sweeps, crack-network and graph tools, propagation, and "
+            "function diagnostics.",
+            VALIDATION_CASES,
+        ),
+    ]
+    for fname, title, blurb, cases in targets:
+        nb = build_notebook(cases, title, blurb)
+        out = NB_DIR / fname
+        out.write_text(json.dumps(nb, indent=1), encoding="utf-8")
+        print(
+            f"Wrote {out.name:24s}  ({len(cases)} cases, "
+            f"{len(nb['cells'])} cells, {out.stat().st_size / 1024:.1f} KB)"
+        )
 
 
 if __name__ == "__main__":
