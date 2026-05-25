@@ -44,21 +44,37 @@ E = 231.52e9               # Young's modulus (Pa)
 NU = 0.3
 PLANE_STRAIN = True
 H_THICK = 6.35e-3          # disk thickness (m)
-N_ELEM = 60                # boundary elements
+N_ELEM = 60                # boundary elements (uniform default)
 GAUSS_N_SOLVE = 4          # quadrature order in the matrix assembly
 GAUSS_N_STRESS = 12        # quadrature order in interior stress eval
 ARC_HALF_ANGLE = 15.0      # loaded arc half-angle (deg)
 PAD_FRAC = 0.03            # interior pad as fraction of R
 
 
-def build_problem(n_grid: int):
+def build_problem(n_grid: int,
+                  *,
+                  n_elem: int = N_ELEM,
+                  graded: bool = False,
+                  concentration: float = 8.0,
+                  taper_exponent: float = 4.0):
     """Build boundary, BCs, and the interior grid for both solvers."""
-    mesh = build_boundary({
-        "type": "circle",
-        "R": R,
-        "n_boundary": N_ELEM,
-        "center": (0.0, 0.0),
-    })
+    if graded:
+        mesh = build_boundary({
+            "type": "circle_graded",
+            "R": R,
+            "n_boundary": n_elem,
+            "center": (0.0, 0.0),
+            "focal_angles_deg": (90.0, -90.0),
+            "concentration":  concentration,
+            "taper_exponent": taper_exponent,
+        })
+    else:
+        mesh = build_boundary({
+            "type": "circle",
+            "R": R,
+            "n_boundary": n_elem,
+            "center": (0.0, 0.0),
+        })
 
     theta_deg = np.asarray(mesh.theta_deg, dtype=float)
     L         = np.asarray(mesh.length, dtype=float)
@@ -178,6 +194,14 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--n-grid", type=int, default=120,
                     help="Interior grid resolution (default 120 matches the notebook).")
+    ap.add_argument("--n-elem", type=int, default=N_ELEM,
+                    help=f"Boundary element count (default {N_ELEM}).")
+    ap.add_argument("--graded", action="store_true",
+                    help="Use circle_graded mesh concentrated under the platens.")
+    ap.add_argument("--concentration", type=float, default=8.0,
+                    help="Graded mesh: density ratio at platen vs equator (default 8).")
+    ap.add_argument("--taper-exponent", type=float, default=4.0,
+                    help="Graded mesh: cos^p kernel exponent (default 4 -> ~+/-45 deg width).")
     ap.add_argument("--engines", choices=["both", "cpp", "python"], default="both")
     ap.add_argument("--out-dir", type=str,
                     default=str(REPO / "VCEM_4_0" / "output" / "bench_disk_compression_2"))
@@ -186,12 +210,25 @@ def main():
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    mesh_kind = (f"graded(C={args.concentration:g}, p={args.taper_exponent:g})"
+                 if args.graded else "uniform")
     print(f"\nProblem: R={R*1e3:.2f} mm, P={P_TOTAL:.1f} N, E={E:.3e} Pa, nu={NU}")
-    print(f"         N_elem={N_ELEM}, gauss_n(solve)={GAUSS_N_SOLVE}, "
+    print(f"         N_elem={args.n_elem} ({mesh_kind}), gauss_n(solve)={GAUSS_N_SOLVE}, "
           f"gauss_n(stress)={GAUSS_N_STRESS}, n_grid={args.n_grid}")
     print(f"Engines: {args.engines}\n")
 
-    mesh, is_traction, bc_x, bc_y, xs, ys = build_problem(args.n_grid)
+    mesh, is_traction, bc_x, bc_y, xs, ys = build_problem(
+        args.n_grid,
+        n_elem=args.n_elem,
+        graded=args.graded,
+        concentration=args.concentration,
+        taper_exponent=args.taper_exponent,
+    )
+    # Save the mesh segment endpoints for post-hoc visualization.
+    np.save(out_dir / "boundary_x1.npy", np.asarray(mesh.x1))
+    np.save(out_dir / "boundary_y1.npy", np.asarray(mesh.y1))
+    np.save(out_dir / "boundary_x2.npy", np.asarray(mesh.x2))
+    np.save(out_dir / "boundary_y2.npy", np.asarray(mesh.y2))
     np.save(out_dir / "xs.npy", xs)
     np.save(out_dir / "ys.npy", ys)
 

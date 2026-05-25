@@ -77,6 +77,89 @@ def build_circle_boundary(R: float, n_boundary: int, center: Tuple[float, float]
 
     return _segments_to_mesh(x1, y1, x2, y2, compute_theta=True, center=center)
 
+
+def build_circle_graded_boundary(
+    R: float,
+    n_boundary: int,
+    center: Tuple[float, float] = (0.0, 0.0),
+    *,
+    focal_angles_deg: Sequence[float] = (90.0, -90.0),
+    concentration: float = 8.0,
+    taper_exponent: float = 4.0,
+) -> BoundaryMesh:
+    """Circle boundary with non-uniform spacing concentrated near focal angles.
+
+    Density of nodes at angle theta is
+
+        d(theta) = 1 + (concentration - 1) * sum_k max(0, cos(theta - phi_k))^p
+
+    where phi_k = focal_angles_deg (in radians) and p = taper_exponent. Nodes
+    are placed by inverse-CDF of d(theta), so segment count per arc equals
+    the density-weighted arc length. For the Brazilian-disk default
+    (phi = +/-90 deg, p = 4), d(theta) simplifies to 1 + (C-1)*sin^4(theta):
+    peak density C at the platens, baseline 1 at the equator, smooth taper.
+
+    Symmetry is exact by construction: density is even about each focal
+    angle and about the midpoint between consecutive focals, so the CDF
+    inversion places nodes whose mirror images across both the x and y
+    axes are also nodes (provided n_boundary % 4 == 0 when focals are at
+    +/-90 deg, which preserves the quadrant nodes).
+
+    Parameters
+    ----------
+    R, center : circle geometry.
+    n_boundary : total number of straight segments (recommend even; for
+        focals at +/-90 deg, multiples of 4 keep the quadrant landings).
+    focal_angles_deg : where to concentrate (default: top + bottom platens).
+    concentration : density at a focal point relative to baseline (default 8).
+    taper_exponent : how fast the density returns to baseline; larger = sharper
+        peak (default 4 gives a ~+/-45 deg effective width).
+    """
+    cx, cy = center
+    n = int(n_boundary)
+    if n < 4:
+        raise ValueError("n_boundary must be >= 4 for a meaningful circle")
+
+    focal_rad = np.array([np.radians(float(a)) for a in focal_angles_deg], dtype=float)
+    C = float(concentration)
+    p = float(taper_exponent)
+    if C < 1.0:
+        raise ValueError("concentration must be >= 1.0")
+    if p <= 0.0:
+        raise ValueError("taper_exponent must be > 0")
+
+    # Build a fine angular grid and integrate d(theta) to its CDF.
+    # n_fine = max(20000, 200*n) keeps interpolation error well below the
+    # node spacing even for n_boundary up to ~1000.
+    n_fine = max(20000, 200 * n)
+    th = np.linspace(0.0, 2.0 * np.pi, n_fine + 1)
+
+    density = np.ones_like(th)
+    for phi in focal_rad:
+        c = np.cos(th - phi)
+        density += (C - 1.0) * np.maximum(0.0, c) ** p
+
+    # CDF via trapezoid rule
+    dtheta = np.diff(th)
+    increments = 0.5 * (density[:-1] + density[1:]) * dtheta
+    cdf = np.concatenate([[0.0], np.cumsum(increments)])
+    cdf = cdf / cdf[-1]   # normalize to [0, 1]
+
+    # Invert at equal CDF intervals to place n+1 node angles (closing point
+    # duplicates the start). Drop the duplicate so we have n segments.
+    target = np.linspace(0.0, 1.0, n + 1)
+    node_angles = np.interp(target, cdf, th)
+    node_angles = node_angles[:-1]   # length n
+
+    x_nodes = cx + R * np.cos(node_angles)
+    y_nodes = cy + R * np.sin(node_angles)
+    x1 = x_nodes
+    y1 = y_nodes
+    x2 = np.roll(x_nodes, -1)
+    y2 = np.roll(y_nodes, -1)
+
+    return _segments_to_mesh(x1, y1, x2, y2, compute_theta=True, center=center)
+
 def build_rectangle_boundary(width: float, height: float, n_boundary: int,
                             center: Tuple[float, float]=(0.0, 0.0)) -> BoundaryMesh:
     """
@@ -146,6 +229,8 @@ def build_boundary(spec: Dict) -> BoundaryMesh:
     Examples
     --------
     spec = {"type":"circle", "R":0.1, "n_boundary":400, "center":[0,0]}
+    spec = {"type":"circle_graded", "R":0.0127, "n_boundary":120,
+            "focal_angles_deg":[90,-90], "concentration":8, "taper_exponent":4}
     spec = {"type":"rectangle","width":1.0,"height":0.5,"n_boundary":200}
     spec = {"type":"polygon","vertices":[[0,0],[1,0],[1,1],[0,1]],"n_boundary":300}
     """
@@ -160,6 +245,18 @@ def build_boundary(spec: Dict) -> BoundaryMesh:
         R = float(spec["R"])
         center = tuple(spec.get("center", (0.0, 0.0)))
         return build_circle_boundary(R=R, n_boundary=n, center=center)
+    if btype == "circle_graded":
+        R = float(spec["R"])
+        center = tuple(spec.get("center", (0.0, 0.0)))
+        focal = spec.get("focal_angles_deg", (90.0, -90.0))
+        concentration  = float(spec.get("concentration", 8.0))
+        taper_exponent = float(spec.get("taper_exponent", 4.0))
+        return build_circle_graded_boundary(
+            R=R, n_boundary=n, center=center,
+            focal_angles_deg=focal,
+            concentration=concentration,
+            taper_exponent=taper_exponent,
+        )
     if btype == "rectangle":
         width = float(spec["width"])
         height = float(spec["height"])
