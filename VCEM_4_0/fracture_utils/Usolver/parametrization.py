@@ -138,6 +138,7 @@ class DCENetworkStaticV4:
             tip_cluster=str(_ignored.get("tip_cluster", "power")),
             tip_cluster_power=float(_ignored.get("tip_cluster_power", 2.0)),
             other_min_panels=int(_ignored.get("other_min_panels", 1)),
+            min_panel_length_ratio=float(_ignored.get("min_panel_length_ratio", 1.0e-3)),
         )
 
         offsets, junction_dof, branch_end_dof, nunk = allocate_unknowns(

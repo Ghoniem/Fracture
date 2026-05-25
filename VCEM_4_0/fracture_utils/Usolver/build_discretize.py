@@ -43,6 +43,50 @@ from .build_mesh import (
 )
 
 
+def _merge_short_panels(s_nodes: np.ndarray, min_length: float) -> Tuple[np.ndarray, int]:
+    """Greedy in-place merge of consecutive s_nodes whose gap < min_length.
+
+    Repeatedly removes the shorter of the two neighbours of the smallest panel
+    (preserving the polyline endpoints s_nodes[0] and s_nodes[-1]) until every
+    surviving panel has length >= min_length. Returns the updated s_nodes and
+    the number of merges performed.
+
+    The system matrix in the KKT crack solve becomes severely ill-conditioned
+    when panel lengths span many decades -- tip-clustering or kink-refinement
+    can produce panels orders of magnitude smaller than their peers, and the
+    K^T K normal-equation matrix in solve_kkt_lsq_eq inherits the *square* of
+    that conditioning. The threshold is typically set as a small fraction of
+    the polyline's total length L (e.g. min_length = 1e-3 * L).
+    """
+    if s_nodes.size < 3 or min_length <= 0.0:
+        return s_nodes, 0
+    s = list(map(float, s_nodes))
+    n_merged = 0
+    while True:
+        ds = np.diff(np.asarray(s))
+        if ds.size == 0:
+            break
+        k_short = int(np.argmin(ds))
+        if float(ds[k_short]) >= min_length:
+            break
+        # Pick which boundary node of the offending panel to remove. Endpoints
+        # s[0] and s[-1] are immovable (they pin the polyline to its vertices).
+        if k_short == 0:
+            del s[1]                       # absorb first panel into the next
+        elif k_short == len(ds) - 1:
+            del s[-2]                      # absorb last panel into the previous
+        else:
+            # Merge with the smaller neighbour (smallest local mesh change).
+            if ds[k_short - 1] <= ds[k_short + 1]:
+                del s[k_short]             # merge into left neighbour
+            else:
+                del s[k_short + 1]         # merge into right neighbour
+        n_merged += 1
+        if len(s) < 3:                     # only one panel left, can't shrink further
+            break
+    return np.asarray(s, float), n_merged
+
+
 def discretize_polylines(
     network: CrackNetworkV4,
     polylines: List[dict],
@@ -60,6 +104,7 @@ def discretize_polylines(
     tip_cluster: str = "power",
     tip_cluster_power: float = 2.0,
     other_min_panels: int = 1,
+    min_panel_length_ratio: float = 1.0e-3,
 ) -> List[dict]:
     """
     Discretize polyline records into panel midpoints, collocation points, and quadrature sources.
@@ -155,6 +200,25 @@ def discretize_polylines(
             tip_cluster=tip_cluster,
             tip_cluster_power=tip_cluster_power,
         )
+
+        # Ill-conditioning guard: merge any panels shorter than
+        # min_panel_length_ratio * L. KKT solve_kkt_lsq_eq forms K^T K so a
+        # large length-ratio between panels squares into the condition number;
+        # tip-clustering can easily produce panels 4-6 decades smaller than
+        # their peers.
+        if min_panel_length_ratio > 0.0 and L > 0.0:
+            min_length = float(min_panel_length_ratio) * float(L)
+            s_nodes, n_merged = _merge_short_panels(s_nodes, min_length)
+            if n_merged > 0:
+                Np_new = int(s_nodes.size - 1)
+                warnings.warn(
+                    f"Polyline pid={pid}: merged {n_merged} sub-threshold panels "
+                    f"(min_length = {min_panel_length_ratio:.0e} * L = {min_length:.3e}); "
+                    f"Np {Np} -> {Np_new}.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                Np = Np_new
 
         if collocation_mode == "nodes" and Np >= 2:
             s_col = s_nodes[1:-1].copy()
