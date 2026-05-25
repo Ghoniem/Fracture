@@ -49,7 +49,7 @@ class BrazilianDiskParams:
     nu: float
 
     # discretization / numerics
-    n_elem: int = 120
+    n_boundary_elements: int = 120
     gauss_n: int = 4
     plane_strain: bool = True
 
@@ -95,7 +95,7 @@ def compute_bem_brazilian_disk_field(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # 1) Build boundary
-    mesh = build_boundary({"type": "circle", "R": params.R, "n_boundary": params.n_elem, "center": (0.0, 0.0)})
+    mesh = build_boundary({"type": "circle", "R": params.R, "n_boundary": params.n_boundary_elements, "center": (0.0, 0.0)})
 
     # 2) BCs: distributed normal pressure on top/bottom arcs
     theta_deg = np.asarray(mesh.theta_deg, dtype=float)
@@ -108,7 +108,7 @@ def compute_bem_brazilian_disk_field(
     L_top = float(np.sum(L[top]))
     L_bot = float(np.sum(L[bot]))
     if L_top <= 0 or L_bot <= 0:
-        raise RuntimeError("Top/bottom loaded arc has zero length — check arc selector or n_elem.")
+        raise RuntimeError("Top/bottom loaded arc has zero length — check arc selector or n_boundary_elements.")
 
     # NOTE: params.P_total is force (N) per platen.
     # Convert to physical pressure traction (Pa) on each loaded arc:

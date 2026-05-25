@@ -28,18 +28,18 @@ class BenchResult:
     metrics: Dict[str, float]
 
 
-def _circle_pts(R: float, n_elem: int) -> np.ndarray:
-    th = np.linspace(0.0, 2.0 * np.pi, n_elem + 1)
+def _circle_pts(R: float, n_boundary_elements: int) -> np.ndarray:
+    th = np.linspace(0.0, 2.0 * np.pi, n_boundary_elements + 1)
     return np.c_[R * np.cos(th), R * np.sin(th)]
 
 
-def run_benchmark_rigid_translation(*, R: float = 1.0, n_elem: int = 120,
+def run_benchmark_rigid_translation(*, R: float = 1.0, n_boundary_elements: int = 120,
                                     E: float = 200e9, nu: float = 0.3,
                                     ux: float = 1e-4, uy: float = 0.0,
                                     plane_strain: bool = True) -> BenchResult:
-    pts = _circle_pts(R, n_elem)
+    pts = _circle_pts(R, n_boundary_elements)
     solver = BEMSolver2D(E=E, nu=nu, plane_strain=plane_strain)
-    for i in range(n_elem):
+    for i in range(n_boundary_elements):
         x1, y1 = pts[i]
         x2, y2 = pts[i + 1]
         solver.add_element(x1, y1, x2, y2, is_traction=False, bc_x=ux, bc_y=uy)
@@ -65,13 +65,13 @@ def run_benchmark_rigid_translation(*, R: float = 1.0, n_elem: int = 120,
     )
 
 
-def run_benchmark_uniform_pressure(*, R: float = 1.0, n_elem: int = 160,
+def run_benchmark_uniform_pressure(*, R: float = 1.0, n_boundary_elements: int = 160,
                                    E: float = 200e9, nu: float = 0.3,
                                    p: float = 1e6,
                                    plane_strain: bool = True) -> BenchResult:
-    pts = _circle_pts(R, n_elem)
+    pts = _circle_pts(R, n_boundary_elements)
     solver = BEMSolver2D(E=E, nu=nu, plane_strain=plane_strain)
-    for i in range(n_elem):
+    for i in range(n_boundary_elements):
         x1, y1 = pts[i]
         x2, y2 = pts[i + 1]
         dx = x2 - x1

@@ -148,7 +148,6 @@ def compute_crack_boundary_tractions_via_grid(
         extent_factor=1.0,
         n_grid=int(coupling.n_grid),
         add_remote=False,  # does NOT remove spatial applied; we subtract it explicitly below
-        mask_cracks=False,
         cmap="jet",
         n_bands=40,
         label_contours=False,
@@ -273,7 +272,7 @@ def solve_bem_with_extra_boundary_tractions(
     bem_dir.mkdir(parents=True, exist_ok=True)
 
     # Rebuild boundary mesh
-    mesh = build_boundary({"type": "circle", "R": disk_params.R, "n_boundary": disk_params.n_elem, "center": (0.0, 0.0)})
+    mesh = build_boundary({"type": "circle", "R": disk_params.R, "n_boundary": disk_params.n_boundary_elements, "center": (0.0, 0.0)})
 
     theta_deg = np.asarray(mesh.theta_deg, dtype=float)
     L = np.asarray(mesh.length, dtype=float)

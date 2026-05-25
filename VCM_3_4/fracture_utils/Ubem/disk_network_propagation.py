@@ -184,7 +184,7 @@ def run_network_growth_uncoupled(
         return S
 
     solver_kwargs = dict(
-        ne_half=100,
+        n_crack_elements=100,
         representation="cheb_quad",
         node_distribution="tip_dense",
         solver_option="parametrized_crack",
@@ -224,7 +224,7 @@ def run_network_growth_uncoupled(
     evaluator = CandidateEvaluator(material=material,applied=applied,
                                    solver_kwargs=solver_kwargs,
                                    direction_law=dir_law,
-                                   enable_ne_half_escalation=False)
+                                   enable_n_crack_elements_escalation=False)
 
     prop = CrackPropagator(cfg=cfg,evaluator=evaluator,
                            toughness=tough,direction_law=dir_law)

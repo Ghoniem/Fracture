@@ -22,12 +22,12 @@ def moving_average_nan(y: np.ndarray, window: int) -> np.ndarray:
     return num / den
 
 
-def resolve_smooth_window(value, ne_half: int, *, C: int = 50, wmin: int = 3) -> int:
+def resolve_smooth_window(value, n_crack_elements: int, *, C: int = 50, wmin: int = 3) -> int:
     if value is None:
         return 0
     if isinstance(value, str):
         if value.strip().lower() == "auto":
-            nh = max(1, int(ne_half))
+            nh = max(1, int(n_crack_elements))
             w = int(round(float(C) / float(nh)))
             w = max(int(wmin), w)
         else:

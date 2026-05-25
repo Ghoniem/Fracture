@@ -143,10 +143,10 @@ def _deg_map_from_network(net) -> dict[int, int]:
     return deg
 
 
-def _infer_ne_half(sol: dict) -> int:
+def _infer_n_crack_elements(sol: dict) -> int:
     if not isinstance(sol, dict):
         return 0
-    for k in ("ne_half", "nh", "n_half"):
+    for k in ("n_crack_elements", "nh", "n_half"):
         v = sol.get(k, None)
         if v is not None:
             try:
@@ -155,7 +155,7 @@ def _infer_ne_half(sol: dict) -> int:
                 pass
     params = sol.get("params", None)
     if isinstance(params, dict):
-        v = params.get("ne_half", None)
+        v = params.get("n_crack_elements", None)
         if v is not None:
             try:
                 return int(v)
@@ -467,7 +467,7 @@ class DCEPlotterDeformedV4:
         else:
             junction_model = str(junction_model).lower()
 
-        nh = _infer_ne_half(sol)
+        nh = _infer_n_crack_elements(sol)
         w_cod = resolve_smooth_window(cod_smooth_window, nh, C=50, wmin=3)
         w_csd = resolve_smooth_window(csd_smooth_window, nh, C=50, wmin=3)
         wJ = max(int(w_cod), int(w_csd))

@@ -222,13 +222,13 @@ class CrackPropagator:
                 reports.append(TipPropagationReport(vid, which, False, 0.0, float(theta), float(keff0), float(KI0), float(KII0), f"extend_failed:{e}"))
 
         # Optional remesh. All policies accept the same kwargs:
-        #     remesh_network(network, *, ne_half=...)
-        # ne_half is read from the evaluator's solver_kwargs when available; policies
+        #     remesh_network(network, *, n_crack_elements=...)
+        # n_crack_elements is read from the evaluator's solver_kwargs when available; policies
         # that don't need it (e.g. GlobalRemeshPolicy) simply ignore the value.
         if self.remesh_policy is not None:
             sk = getattr(self.evaluator, "solver_kwargs", None) or {}
-            ne_half = sk.get("ne_half", None)
-            ne_half = int(ne_half) if ne_half is not None else None
-            net_new = self.remesh_policy.remesh_network(net_new, ne_half=ne_half)
+            n_crack_elements = sk.get("n_crack_elements", None)
+            n_crack_elements = int(n_crack_elements) if n_crack_elements is not None else None
+            net_new = self.remesh_policy.remesh_network(net_new, n_crack_elements=n_crack_elements)
 
         return PropagationResult(network_new=net_new, reports=reports)

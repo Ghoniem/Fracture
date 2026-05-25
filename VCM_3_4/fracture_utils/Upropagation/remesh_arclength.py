@@ -138,7 +138,7 @@ class ArcLengthRemeshPolicy:
     # -----------------------------
     # Public API
     # -----------------------------
-    def remesh_network(self, network: CrackNetworkV4, *, ne_half: int) -> CrackNetworkV4:
+    def remesh_network(self, network: CrackNetworkV4, *, n_crack_elements: int) -> CrackNetworkV4:
         """
         Return a new CrackNetworkV4 with re-sampled vertices along the main polyline.
 
@@ -146,9 +146,9 @@ class ArcLengthRemeshPolicy:
         ----------
         network:
             Current crack network.
-        ne_half:
+        n_crack_elements:
             Half-element budget used by solver. For v1, we interpret a target node count
-            N_target = 2*ne_half + 1 along the polyline.
+            N_target = 2*n_crack_elements + 1 along the polyline.
 
         Notes
         -----
@@ -164,7 +164,7 @@ class ArcLengthRemeshPolicy:
         if L <= 0:
             return network
 
-        N_target = int(2 * int(ne_half) + 1)
+        N_target = int(2 * int(n_crack_elements) + 1)
         N_target = max(N_target, 5)
 
         s_nodes = self._build_s_nodes(s_cum, L, pts, N_target)

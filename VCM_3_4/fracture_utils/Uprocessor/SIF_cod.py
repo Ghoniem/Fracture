@@ -53,7 +53,7 @@ def rotate_sifs(K_I, K_II, theta):
 def solve_K_polyline(
     net,
     V,
-    ne_half,
+    n_crack_elements,
     edge_index_use,
     a_fit_global,
     *,
@@ -114,7 +114,7 @@ def solve_K_polyline(
         applied = AppliedStress(sx, sy, txy)
 
     calc = DCENetworkStaticV4(mat, net, applied)
-    sol = calc.solve(ne_half=int(ne_half), **dict(base_knobs))
+    sol = calc.solve(n_crack_elements=int(n_crack_elements), **dict(base_knobs))
     res = DCEResultsNetworkV4(calc, sol)
 
     edge_index_use = int(edge_index_use)
@@ -548,7 +548,7 @@ def _oversample_midpoint_arrays(
 
     This is a lightweight, solver-agnostic refinement: it linearly interpolates
     between consecutive midpoint samples to create additional points per interval.
-    It does NOT change the solve (ne_half), only the regression sample set used
+    It does NOT change the solve (n_crack_elements), only the regression sample set used
     in Euclid COD->SIF fits.
 
     Parameters

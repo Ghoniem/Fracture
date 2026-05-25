@@ -64,8 +64,8 @@ class CandidateEvaluator:
         rmax_frac: float = 0.12,
         min_pts: int = 10,
         two_term: bool = False,
-        enable_ne_half_escalation: bool = False,
-        ne_half_max: int = 240,
+        enable_n_crack_elements_escalation: bool = False,
+        n_crack_elements_max: int = 240,
     ):
         self.material = material
         self.applied = applied
@@ -76,8 +76,8 @@ class CandidateEvaluator:
         self.min_pts = int(min_pts)
         self.two_term = bool(two_term)
 
-        self.enable_ne_half_escalation = bool(enable_ne_half_escalation)
-        self.ne_half_max = int(ne_half_max)
+        self.enable_n_crack_elements_escalation = bool(enable_n_crack_elements_escalation)
+        self.n_crack_elements_max = int(n_crack_elements_max)
 
         self._DCENetworkStaticV4 = None
         self._DCEResultsNetworkV4 = None
@@ -158,13 +158,13 @@ class CandidateEvaluator:
         last_err: Optional[Exception] = None
 
         n_try = 1
-        if self.enable_ne_half_escalation:
+        if self.enable_n_crack_elements_escalation:
             n_try = 4
 
-        # ne_half escalation is per-tip: temporarily bump solver_kwargs while retrying,
+        # n_crack_elements escalation is per-tip: temporarily bump solver_kwargs while retrying,
         # then restore. Without restore, every subsequent tip evaluation would inherit
         # the escalated value and silently consume far more memory / runtime.
-        original_ne_half = self.solver_kwargs.get("ne_half", None)
+        original_n_crack_elements = self.solver_kwargs.get("n_crack_elements", None)
         try:
             for _ in range(n_try):
                 try:
@@ -174,14 +174,14 @@ class CandidateEvaluator:
                 except Exception as e:
                     last_err = e
                     msg = str(e).lower()
-                    if (not self.enable_ne_half_escalation) or ("window too small" not in msg):
+                    if (not self.enable_n_crack_elements_escalation) or ("window too small" not in msg):
                         break
 
-                    ne_half = int(self.solver_kwargs.get("ne_half", 60))
-                    ne_half_new = min(self.ne_half_max, max(ne_half + 10, 2 * ne_half))
-                    if ne_half_new <= ne_half:
+                    n_crack_elements = int(self.solver_kwargs.get("n_crack_elements", 60))
+                    n_crack_elements_new = min(self.n_crack_elements_max, max(n_crack_elements + 10, 2 * n_crack_elements))
+                    if n_crack_elements_new <= n_crack_elements:
                         break
-                    self.solver_kwargs["ne_half"] = ne_half_new
+                    self.solver_kwargs["n_crack_elements"] = n_crack_elements_new
 
                     calc = getattr(res, "calc", None)
                     network = getattr(calc, "net", None) or getattr(calc, "network", None)
@@ -189,10 +189,10 @@ class CandidateEvaluator:
                         break
                     res = self.solve_results(network)
         finally:
-            if original_ne_half is None:
-                self.solver_kwargs.pop("ne_half", None)
+            if original_n_crack_elements is None:
+                self.solver_kwargs.pop("n_crack_elements", None)
             else:
-                self.solver_kwargs["ne_half"] = original_ne_half
+                self.solver_kwargs["n_crack_elements"] = original_n_crack_elements
 
         if last_err is not None:
             raise last_err

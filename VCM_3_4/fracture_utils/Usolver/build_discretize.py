@@ -47,7 +47,7 @@ def discretize_polylines(
     network: CrackNetworkV4,
     polylines: List[dict],
     *,
-    ne_half: int,
+    n_crack_elements: int,
     node_distribution: str,
     collocation_mode: str,
     representation: str,
@@ -103,7 +103,7 @@ def discretize_polylines(
         L = float(p.get("total_length", 0.0))
 
         # Total panels for this polyline (legacy scaling)
-        Np = max(8, int(2 * ne_half))
+        Np = max(8, int(2 * n_crack_elements))
 
         # Single-segment curved edges (arc/cspline) are treated as one segment of length L.
         nseg = int(len(segL)) if (len(segL) > 0) else 1
@@ -259,7 +259,7 @@ def discretize_polylines(
                     f"(max/median = {ratio:.2e}, L = {L:.3e}, Np = {Np}). "
                     "This usually means the crack is too short or too coarsely "
                     "panelled for the singular representation; consider "
-                    "representation='regular' or larger ne_half.",
+                    "representation='regular' or larger n_crack_elements.",
                     RuntimeWarning,
                     stacklevel=2,
                 )

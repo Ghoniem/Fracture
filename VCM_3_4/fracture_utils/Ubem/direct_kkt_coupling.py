@@ -131,7 +131,7 @@ def _disk_external_boundary_tractions(mesh, *, P_total: float, arc_half_angle_de
 def build_disk_traction_augmented_data(
     *,
     R: float,
-    n_elem: int,
+    n_boundary_elements: int,
     E: float,
     nu: float,
     P_total: float,
@@ -152,7 +152,7 @@ def build_disk_traction_augmented_data(
         Use this when crack solve already includes applied/BEM field.
       - "external_total": enforce t_bc + t_cr(q) = t_ext.
     """
-    mesh = build_boundary({"type": "circle", "R": float(R), "n_boundary": int(n_elem), "center": (0.0, 0.0)})
+    mesh = build_boundary({"type": "circle", "R": float(R), "n_boundary": int(n_boundary_elements), "center": (0.0, 0.0)})
 
     segs: list[Segment] = []
     for i in range(mesh.n_seg):

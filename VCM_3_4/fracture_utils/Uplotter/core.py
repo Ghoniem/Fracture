@@ -149,12 +149,12 @@ class DCEPlotterV4:
 
         pk = PKProcessor(self.res)
 
-        ne_half_eff = int(getattr(self.res, "sol", {}).get("ne_half", 0) or 0)
-        if ne_half_eff <= 0:
-            ne_half_eff = 10
+        n_crack_elements_eff = int(getattr(self.res, "sol", {}).get("n_crack_elements", 0) or 0)
+        if n_crack_elements_eff <= 0:
+            n_crack_elements_eff = 10
 
-        cod_win = resolve_smooth_window(cod_smooth_window, ne_half_eff)
-        csd_win = resolve_smooth_window(csd_smooth_window, ne_half_eff)
+        cod_win = resolve_smooth_window(cod_smooth_window, n_crack_elements_eff)
+        csd_win = resolve_smooth_window(csd_smooth_window, n_crack_elements_eff)
 
         V = self.calc.network.vertices
         E = self.calc.network.edges
@@ -384,7 +384,6 @@ class DCEPlotterV4:
         scale: float = 1.0,
         disp_scale: float = 1e6,
         units: str = "mm",
-        mask_cracks: bool = True,
     ):
         V = self.calc.network.vertices
         ext = network_extent(V)
@@ -422,25 +421,6 @@ class DCEPlotterV4:
                 duy = float(np.nanmedian(uy[pos]) - np.nanmedian(uy[neg]))
                 ux = np.where(yl < 0.0, ux + dux, ux)
                 uy = np.where(yl < 0.0, uy + duy, uy)
-
-        if mask_cracks:
-            for e in self.calc.network.edges:
-                v0 = next(v for v in V if int(v.id) == int(e.v0))
-                v1 = next(v for v in V if int(v.id) == int(e.v1))
-                p0 = np.array([float(v0.x), float(v0.y)])
-                p1 = np.array([float(v1.x), float(v1.y)])
-                d = p1 - p0
-                L2 = float(d @ d)
-                if L2 <= 0:
-                    continue
-                PX = np.stack([Xg, Yg], axis=0).reshape(2, -1)
-                tt = ((PX.T - p0) @ d) / L2
-                tt = np.clip(tt, 0.0, 1.0)
-                proj = p0.reshape(1, 2) + tt.reshape(-1, 1) * d.reshape(1, 2)
-                dist = np.hypot(PX.T[:, 0] - proj[:, 0], PX.T[:, 1] - proj[:, 1]).reshape(Xg.shape)
-                mask = dist < (2e-3 * ext)
-                ux = np.where(mask, np.nan, ux)
-                uy = np.where(mask, np.nan, uy)
 
         sxy = 1e3 if units.lower() == "mm" else 1.0
 
@@ -523,28 +503,6 @@ class DCEPlotterV4:
             if comp not in fields:
                 continue
             Z = np.array(fields[comp], float)
-
-            if opts.mask_cracks:
-                for e in self.calc.network.edges:
-                    v0 = next(v for v in V if int(v.id) == int(e.v0))
-                    v1 = next(v for v in V if int(v.id) == int(e.v1))
-                    p0 = np.array([float(v0.x), float(v0.y)])
-                    p1 = np.array([float(v1.x), float(v1.y)])
-                    d = p1 - p0
-                    L2 = float(d @ d)
-                    if L2 <= 0:
-                        continue
-                    PX = np.stack([Xg, Yg], axis=0).reshape(2, -1)
-                    tt = ((PX.T - p0) @ d) / L2
-                    tt = np.clip(tt, 0.0, 1.0)
-                    proj = p0.reshape(1, 2) + tt.reshape(-1, 1) * d.reshape(1, 2)
-                    dist = np.hypot(PX.T[:, 0] - proj[:, 0], PX.T[:, 1] - proj[:, 1]).reshape(Xg.shape)
-
-                    dx = xs[1] - xs[0] if xs.size > 1 else 0.0
-                    dy = ys[1] - ys[0] if ys.size > 1 else 0.0
-                    h = max(abs(dx), abs(dy))
-                    width = max(getattr(opts, "mask_width_factor", 0.0) * ext, 2.0 * h)
-                    Z[dist < width] = np.nan
 
             Zp = apply_clip_percentiles(Z, getattr(opts, "clip_percentiles", None))
             ref = abs(float(ref_map.get(comp, 0.0)))

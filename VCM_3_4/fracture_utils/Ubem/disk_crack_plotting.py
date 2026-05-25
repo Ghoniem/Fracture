@@ -66,9 +66,6 @@ def plot_total_field(bem_dir, res, out_dir, tag, params: PlotParams, show=True):
         extent_factor=3,
         n_grid=len(xs),
         add_remote=False,
-        # Avoid crack-line singular pixels dominating the combined contour scale.
-        mask_cracks=True,
-        mask_width_factor=1.0e-2,
         cmap=params.cmap,
         n_bands=params.n_bands,
         label_contours=False,

@@ -56,7 +56,7 @@ class DCENetworkStaticV4:
 
     def solve(
         self,
-        ne_half: int,
+        n_crack_elements: int,
         representation: str = "panel",
         *,
         solver_option: str = "parametrized_crack",
@@ -98,7 +98,7 @@ class DCENetworkStaticV4:
         if not np.isfinite(soft_eta) or soft_eta < 0:
             soft_eta = 1.0
 
-        ne_half = max(2, int(ne_half))
+        n_crack_elements = max(2, int(n_crack_elements))
         deg = vertex_degrees(self.network)
 
         # ------------------------------------------------------------
@@ -125,7 +125,7 @@ class DCENetworkStaticV4:
         poly_panels = discretize_polylines(
             self.network,
             polylines,
-            ne_half=ne_half,
+            n_crack_elements=n_crack_elements,
             node_distribution=dist_in,
             collocation_mode=collocation_mode,
             representation=rep_in,
@@ -594,7 +594,7 @@ class DCENetworkStaticV4:
             representation=rep_in,
             solver_option="parametrized_crack",
             parametrization=param_kind,
-            ne_half=int(ne_half),
+            n_crack_elements=int(n_crack_elements),
             node_distribution=dist_in,
             collocation_mode=collocation_mode,
             crack_mode=crack_mode,

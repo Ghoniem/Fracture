@@ -81,7 +81,7 @@ class BEMBlockV2:
         self.out_dir = Path(out_dir)
         self.out_dir.mkdir(parents=True, exist_ok=True)
         self.mesh = build_boundary(
-            {"type": "circle", "R": float(disk.R), "n_boundary": int(disk.n_elem), "center": (0.0, 0.0)}
+            {"type": "circle", "R": float(disk.R), "n_boundary": int(disk.n_boundary_elements), "center": (0.0, 0.0)}
         )
 
         self.tx_ext, self.ty_ext = _disk_external_boundary_tractions(self.mesh, self.disk)
@@ -200,7 +200,7 @@ class BEMBlockV2:
     def build_augmented_payload(self, *, d_mode: str = "correction_zero", gauss_n: int = 4) -> Dict[str, np.ndarray]:
         return build_disk_traction_augmented_data(
             R=float(self.disk.R),
-            n_elem=int(self.disk.n_elem),
+            n_boundary_elements=int(self.disk.n_boundary_elements),
             E=float(self.disk.E),
             nu=float(self.disk.nu),
             P_total=float(self.disk.P_total),

@@ -18,11 +18,6 @@ class StressPlotOptsV4:
     y_min: float | None = None
     y_max: float | None = None
     
-    # masking
-    mask_cracks: bool = True
-    mask_crack: Optional[bool] = None  # alias accepted by notebooks
-    mask_width_factor: float = 2e-3
-
     # styling
     cmap: str = "jet"
     n_bands: int = 20
@@ -48,10 +43,6 @@ class StressPlotOptsV4:
 
     extend: str = "both"
     dpi: int = 150
-
-    def __post_init__(self):
-        if self.mask_crack is not None:
-            self.mask_cracks = bool(self.mask_crack)
 
 
 def ensure_dir(p: Optional[Path]) -> Optional[Path]:

@@ -28,7 +28,6 @@ class DCEPlotterDisplacementV4:
         scale: float = 1.0,
         disp_scale: float = 5e4,
         units: str = "mm",
-        mask_cracks: bool = False,
         *,
         show: bool = True,
         save: bool = True,
@@ -68,25 +67,6 @@ class DCEPlotterDisplacementV4:
                 duy = float(np.nanmedian(uy[pos]) - np.nanmedian(uy[neg]))
                 ux = np.where(yl < 0.0, ux + dux, ux)
                 uy = np.where(yl < 0.0, uy + duy, uy)
-
-        if mask_cracks:
-            for e in self.calc.network.edges:
-                v0 = next(v for v in V if int(v.id) == int(e.v0))
-                v1 = next(v for v in V if int(v.id) == int(e.v1))
-                p0 = np.array([float(v0.x), float(v0.y)])
-                p1 = np.array([float(v1.x), float(v1.y)])
-                d = p1 - p0
-                L2 = float(d @ d)
-                if L2 <= 0:
-                    continue
-                PX = np.stack([Xg, Yg], axis=0).reshape(2, -1)
-                tt = ((PX.T - p0) @ d) / L2
-                tt = np.clip(tt, 0.0, 1.0)
-                proj = p0.reshape(1, 2) + tt.reshape(-1, 1) * d.reshape(1, 2)
-                dist = np.hypot(PX.T[:, 0] - proj[:, 0], PX.T[:, 1] - proj[:, 1]).reshape(Xg.shape)
-                mask = dist < (2e-3 * ext)
-                ux = np.where(mask, np.nan, ux)
-                uy = np.where(mask, np.nan, uy)
 
         sxy = 1e3 if units.lower() == "mm" else 1.0
 

@@ -3,8 +3,8 @@
 In v1: use solver's existing discretize_polylines() refinement knobs; do global rebuild.
 In v2+: implement local remeshing (only re-panel near modified tips).
 
-All policies expose ``remesh_network(network, *, ne_half=None)`` so the propagator
-has a single uniform entry point. ``ne_half`` is the solver's half-element budget
+All policies expose ``remesh_network(network, *, n_crack_elements=None)`` so the propagator
+has a single uniform entry point. ``n_crack_elements`` is the solver's half-element budget
 along each polyline; policies may ignore it (e.g. the global no-op below).
 """
 
@@ -21,7 +21,7 @@ class RemeshPolicy(Protocol):
         self,
         network: "CrackNetworkV4",
         *,
-        ne_half: Optional[int] = None,
+        n_crack_elements: Optional[int] = None,
     ) -> "CrackNetworkV4":
         ...
 
@@ -37,7 +37,7 @@ class GlobalRemeshPolicy:
         self,
         network: "CrackNetworkV4",
         *,
-        ne_half: Optional[int] = None,
+        n_crack_elements: Optional[int] = None,
     ) -> "CrackNetworkV4":
-        _ = ne_half
+        _ = n_crack_elements
         return network
