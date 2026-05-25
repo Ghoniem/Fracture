@@ -91,12 +91,9 @@ def make_solver(mesh, is_traction, bc_x, bc_y, *, engine: str):
     else:
         s = bem_cpp.BEMSolver2D(E=E, nu=NU, h=H_THICK, plane_strain=PLANE_STRAIN)
 
-    V  = np.asarray(mesh.vertices, dtype=float)
-    Eg = np.asarray(mesh.edges, dtype=int)
-    for k, (i0, i1) in enumerate(Eg):
-        x1, y1 = V[i0]
-        x2, y2 = V[i1]
-        s.add_element(float(x1), float(y1), float(x2), float(y2),
+    for k in range(mesh.n_seg):
+        s.add_element(float(mesh.x1[k]), float(mesh.y1[k]),
+                      float(mesh.x2[k]), float(mesh.y2[k]),
                       bool(is_traction[k]),
                       float(bc_x[k]), float(bc_y[k]))
     return s
