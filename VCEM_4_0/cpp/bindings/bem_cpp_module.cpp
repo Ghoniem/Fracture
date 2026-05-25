@@ -1,8 +1,8 @@
-// Smoke-test pybind11 module for VCEM_4_0.
+// pybind11 bindings for the VCEM_4_0 BEM C++ kernel.
 //
-// Once the BEM core is ported, this file will expose BEMSolver2D and
-// stress_on_grid().  For now it carries a trivial echo function so the
-// build, install, and import path can be validated end-to-end.
+// Python-side API mirrors fracture_utils.Ubem.bem_solver.BEMSolver2D as
+// closely as possible so notebooks can swap the implementation behind a
+// flag.
 
 #include <pybind11/pybind11.h>
 #include <pybind11/eigen.h>
@@ -11,23 +11,148 @@
 
 #include <Eigen/Dense>
 
+#include "vcem/bem_solver.h"
+#include "vcem/kelvin.h"
+#include "vcem/material.h"
+
+#if defined(VCEM_HAVE_OPENMP)
+#include <omp.h>
+#endif
+
 namespace py = pybind11;
-
-namespace vcem { namespace bem {
-
-// Trivial Eigen round-trip: returns x + 1 element-wise.
-Eigen::VectorXd add_one(const Eigen::Ref<const Eigen::VectorXd>& x) {
-    return x.array() + 1.0;
-}
-
-}}  // namespace vcem::bem
+using vcem::bem::BEMSolver2D;
 
 PYBIND11_MODULE(bem_cpp, m) {
-    m.doc() = "VCEM_4_0 BEM C++ kernel (skeleton; full BEM port in progress)";
+    m.doc() = "VCEM_4_0 BEM C++ kernel (Eigen + pybind11)";
+    m.attr("__version__") = "0.1.0";
 
-    m.attr("__version__") = "0.0.1";
+#if defined(VCEM_HAVE_OPENMP)
+    m.attr("openmp_available") = true;
+    m.def("openmp_max_threads", []() { return omp_get_max_threads(); },
+          "Maximum thread count OpenMP will use for parallel sections.");
+    m.def("openmp_set_num_threads", [](int n) { omp_set_num_threads(n); },
+          py::arg("n"),
+          "Set the number of threads for subsequent parallel sections.");
+#else
+    m.attr("openmp_available") = false;
+    m.def("openmp_max_threads", []() { return 1; });
+    m.def("openmp_set_num_threads", [](int) { /* no-op without OpenMP */ });
+#endif
 
-    m.def("add_one", &vcem::bem::add_one,
-          py::arg("x"),
-          "Smoke test: return x + 1 element-wise (validates pybind11+Eigen link).");
+    // ── Kernel introspection helpers (mostly for unit tests) ──────────────
+    m.def("kelvin_U",
+        [](double xf, double yf, double xs, double ys,
+           double E, double nu, bool plane_strain, double r_floor) {
+            return vcem::bem::kelvin_U(xf, yf, xs, ys, E, nu, plane_strain, r_floor);
+        },
+        py::arg("xf"), py::arg("yf"), py::arg("xs"), py::arg("ys"),
+        py::arg("E"), py::arg("nu"), py::arg("plane_strain"),
+        py::arg("r_floor") = 1e-16);
+
+    m.def("kelvin_T",
+        [](double xf, double yf, double xs, double ys,
+           double nx, double ny,
+           double E, double nu, bool plane_strain, double r_floor) {
+            return vcem::bem::kelvin_T(xf, yf, xs, ys, nx, ny,
+                                       E, nu, plane_strain, r_floor);
+        },
+        py::arg("xf"), py::arg("yf"), py::arg("xs"), py::arg("ys"),
+        py::arg("nx"), py::arg("ny"),
+        py::arg("E"), py::arg("nu"), py::arg("plane_strain"),
+        py::arg("r_floor") = 1e-16);
+
+    m.def("kelvin_dU_dfield",
+        [](double xf, double yf, double xs, double ys,
+           double E, double nu, bool plane_strain, double r_floor) {
+            Eigen::Matrix2d dUdx, dUdy;
+            vcem::bem::kelvin_dU_dfield(xf, yf, xs, ys,
+                                        E, nu, plane_strain,
+                                        dUdx, dUdy, r_floor);
+            return py::make_tuple(dUdx, dUdy);
+        },
+        py::arg("xf"), py::arg("yf"), py::arg("xs"), py::arg("ys"),
+        py::arg("E"), py::arg("nu"), py::arg("plane_strain"),
+        py::arg("r_floor") = 1e-16);
+
+    m.def("kelvin_dT_dfield",
+        [](double xf, double yf, double xs, double ys,
+           double nx, double ny,
+           double E, double nu, bool plane_strain, double r_floor) {
+            Eigen::Matrix2d dTdx, dTdy;
+            vcem::bem::kelvin_dT_dfield(xf, yf, xs, ys, nx, ny,
+                                        E, nu, plane_strain,
+                                        dTdx, dTdy, r_floor);
+            return py::make_tuple(dTdx, dTdy);
+        },
+        py::arg("xf"), py::arg("yf"), py::arg("xs"), py::arg("ys"),
+        py::arg("nx"), py::arg("ny"),
+        py::arg("E"), py::arg("nu"), py::arg("plane_strain"),
+        py::arg("r_floor") = 1e-16);
+
+    // ── BEMSolver2D ───────────────────────────────────────────────────────
+    py::class_<BEMSolver2D>(m, "BEMSolver2D")
+        .def(py::init<double, double, double, bool>(),
+             py::arg("E"), py::arg("nu"),
+             py::arg("h") = 1.0,
+             py::arg("plane_strain") = true)
+
+        .def("add_element", &BEMSolver2D::add_element,
+             py::arg("x1"), py::arg("y1"), py::arg("x2"), py::arg("y2"),
+             py::arg("is_traction"), py::arg("bc_x"), py::arg("bc_y"))
+
+        .def("solve", &BEMSolver2D::solve, py::arg("gauss_n") = 8)
+
+        .def("compute_displacement_at_point",
+            [](const BEMSolver2D& self, double x, double y, int gauss_n) {
+                double ux, uy;
+                self.compute_displacement_at_point(x, y, gauss_n, ux, uy);
+                return py::make_tuple(ux, uy);
+            },
+            py::arg("x"), py::arg("y"), py::arg("gauss_n") = 12)
+
+        .def("compute_grad_u_at_point", &BEMSolver2D::compute_grad_u_at_point,
+             py::arg("x"), py::arg("y"), py::arg("gauss_n") = 12)
+
+        .def("compute_stress_at_point",
+            [](const BEMSolver2D& self, double x, double y, int gauss_n) {
+                double sxx, syy, sxy;
+                self.compute_stress_at_point(x, y, gauss_n, sxx, syy, sxy);
+                return py::make_tuple(sxx, syy, sxy);
+            },
+            py::arg("x"), py::arg("y"), py::arg("gauss_n") = 12)
+
+        .def("stress_on_grid",
+            [](const BEMSolver2D& self,
+               const std::vector<double>& xs,
+               const std::vector<double>& ys,
+               int gauss_n) {
+                Eigen::MatrixXd Sxx, Syy, Sxy;
+                self.stress_on_grid(xs, ys, gauss_n, Sxx, Syy, Sxy);
+                return py::make_tuple(Sxx, Syy, Sxy);
+            },
+            py::arg("xs"), py::arg("ys"), py::arg("gauss_n") = 12,
+            "Evaluate (Sxx, Syy, Sxy) on the tensor-product grid (ys, xs). "
+            "Output arrays have shape (len(ys), len(xs)).")
+
+        // Read-only properties returning numpy arrays (zero-copy via std::vector ref)
+        .def_property_readonly("u_x", [](const BEMSolver2D& s) {
+            return py::array_t<double>(s.u_x().size(), s.u_x().data());
+        })
+        .def_property_readonly("u_y", [](const BEMSolver2D& s) {
+            return py::array_t<double>(s.u_y().size(), s.u_y().data());
+        })
+        .def_property_readonly("t_x", [](const BEMSolver2D& s) {
+            return py::array_t<double>(s.t_x().size(), s.t_x().data());
+        })
+        .def_property_readonly("t_y", [](const BEMSolver2D& s) {
+            return py::array_t<double>(s.t_y().size(), s.t_y().data());
+        })
+
+        .def_property_readonly("E",            &BEMSolver2D::E)
+        .def_property_readonly("nu",           &BEMSolver2D::nu)
+        .def_property_readonly("h",            &BEMSolver2D::h)
+        .def_property_readonly("plane_strain", &BEMSolver2D::plane_strain)
+        .def_property_readonly("N",
+            [](const BEMSolver2D& s) { return static_cast<int>(s.segments().size()); })
+    ;
 }

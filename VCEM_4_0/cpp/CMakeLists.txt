@@ -47,14 +47,32 @@ else()
     add_compile_options(-O3 -march=native -Wall -Wextra)
 endif()
 
+# ── OpenMP (parallelizes BEM assembly and stress_on_grid) ─────────────────────
+# Falls back to a single-threaded build if OpenMP is unavailable. Code paths
+# guarded by VCEM_HAVE_OPENMP=1 take the parallel-for branch; otherwise the
+# serial loop runs unchanged.
+find_package(OpenMP)
+if(OpenMP_CXX_FOUND)
+    message(STATUS "OpenMP found -- parallel BEM ENABLED")
+else()
+    message(WARNING "OpenMP not found -- BEM will run single-threaded")
+endif()
+
 # ── Core BEM library (static, header + impl in src/, headers in include/) ─────
 add_library(bem_core STATIC
-    src/_skeleton.cpp
+    src/quadrature.cpp
+    src/kelvin.cpp
+    src/bem_solver.cpp
 )
 target_include_directories(bem_core PUBLIC
     ${EIGEN_INCLUDE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
+
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(bem_core PUBLIC OpenMP::OpenMP_CXX)
+    target_compile_definitions(bem_core PUBLIC VCEM_HAVE_OPENMP=1)
+endif()
 
 # ── pybind11 extension module (this is what notebooks import) ─────────────────
 pybind11_add_module(bem_cpp MODULE
