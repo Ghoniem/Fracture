@@ -161,6 +161,93 @@ PYBIND11_MODULE(bem_cpp, m) {
         "discretization. Parallel via OpenMP over collocation polylines. "
         "sigma_at_col must be (ncol_tot, 3) with columns [Sxx, Syy, Sxy].");
 
+    // Helper used by every crack-assembler binding: unpack a Python
+    // poly_panels list-of-dicts into a vector<PolyPanelData>.
+    auto unpack_panels = [](py::list poly_panels) {
+        std::vector<vcem::crack::PolyPanelData> panels;
+        panels.reserve(poly_panels.size());
+        for (py::handle h : poly_panels) {
+            py::dict d = h.cast<py::dict>();
+            vcem::crack::PolyPanelData p;
+            p.x_col   = d["x_col"].cast<Eigen::MatrixXd>();
+            p.t_col   = d["t_col"].cast<Eigen::MatrixXd>();
+            p.n_col   = d["n_col"].cast<Eigen::MatrixXd>();
+            p.src_pts = d["src_pts"].cast<Eigen::MatrixXd>();
+            p.src_t   = d["src_t"].cast<Eigen::MatrixXd>();
+            p.src_n   = d["src_n"].cast<Eigen::MatrixXd>();
+            p.src_w   = d["src_w"].cast<Eigen::VectorXd>();
+            p.Np      = d["Np"].cast<int>();
+            py::list psrc = d["panel_src"].cast<py::list>();
+            p.panel_src.reserve(psrc.size());
+            for (py::handle pp : psrc) {
+                py::tuple t = pp.cast<py::tuple>();
+                p.panel_src.emplace_back(t[0].cast<int>(), t[1].cast<int>());
+            }
+            panels.push_back(std::move(p));
+        }
+        return panels;
+    };
+
+    m.def("assemble_boundary_traction_operator",
+        [unpack_panels](py::list poly_panels,
+                        const std::vector<int>& offsets,
+                        int nunk,
+                        double E, double nu, bool plane_stress,
+                        const Eigen::Ref<const Eigen::MatrixXd>& boundary_xy,
+                        const Eigen::Ref<const Eigen::MatrixXd>& boundary_n) {
+            auto panels = unpack_panels(poly_panels);
+            Eigen::MatrixXd Mt;
+            vcem::crack::assemble_boundary_traction_operator(
+                panels, offsets, nunk, E, nu, plane_stress,
+                boundary_xy, boundary_n, Mt);
+            return Mt;
+        },
+        py::arg("poly_panels"), py::arg("offsets"), py::arg("nunk"),
+        py::arg("E"), py::arg("nu"), py::arg("plane_stress"),
+        py::arg("boundary_xy"), py::arg("boundary_n"),
+        "Crack-induced boundary traction operator Mt (2*Nb, nunk).");
+
+    m.def("assemble_boundary_displacement_operator",
+        [unpack_panels](py::list poly_panels,
+                        const std::vector<int>& offsets,
+                        int nunk,
+                        double nu, bool plane_stress,
+                        const Eigen::Ref<const Eigen::MatrixXd>& boundary_xy) {
+            auto panels = unpack_panels(poly_panels);
+            Eigen::MatrixXd Mu;
+            vcem::crack::assemble_boundary_displacement_operator(
+                panels, offsets, nunk, nu, plane_stress, boundary_xy, Mu);
+            return Mu;
+        },
+        py::arg("poly_panels"), py::arg("offsets"), py::arg("nunk"),
+        py::arg("nu"), py::arg("plane_stress"),
+        py::arg("boundary_xy"),
+        "Crack-induced boundary displacement operator Mu (2*Nb, nunk).");
+
+    m.def("assemble_bem_boundary_to_crack_traction_operator",
+        [unpack_panels](py::list poly_panels,
+                        double E, double nu, bool plane_stress,
+                        const Eigen::Ref<const Eigen::VectorXd>& boundary_x1,
+                        const Eigen::Ref<const Eigen::VectorXd>& boundary_y1,
+                        const Eigen::Ref<const Eigen::VectorXd>& boundary_x2,
+                        const Eigen::Ref<const Eigen::VectorXd>& boundary_y2,
+                        int gauss_n) {
+            auto panels = unpack_panels(poly_panels);
+            Eigen::MatrixXd Nbc;
+            vcem::crack::assemble_bem_boundary_to_crack_traction_operator(
+                panels, E, nu, plane_stress,
+                boundary_x1, boundary_y1, boundary_x2, boundary_y2,
+                gauss_n, Nbc);
+            return Nbc;
+        },
+        py::arg("poly_panels"),
+        py::arg("E"), py::arg("nu"), py::arg("plane_stress"),
+        py::arg("boundary_x1"), py::arg("boundary_y1"),
+        py::arg("boundary_x2"), py::arg("boundary_y2"),
+        py::arg("gauss_n") = 4,
+        "BEM boundary y=[u_bc,t_bc] -> crack collocation traction operator "
+        "Nbc (2*ncol_tot, 4*Nb).");
+
     m.def("solve_kkt_lsq_eq",
         [](const Eigen::Ref<const Eigen::MatrixXd>& K,
            const Eigen::Ref<const Eigen::VectorXd>& rhs,

@@ -51,4 +51,42 @@ void assemble_operator(
     Eigen::MatrixXd& K,
     Eigen::VectorXd& rhs);
 
+// Map crack unknowns q -> boundary tractions t_cr at the boundary points
+// (boundary_xy[i], boundary_n[i]). Output shape (2*Nb, nunk) with rows
+// packed as [tx0, ty0, tx1, ty1, ...]. Direct port of
+// build_discretize.assemble_boundary_traction_operator.
+void assemble_boundary_traction_operator(
+    const std::vector<PolyPanelData>& panels,
+    const std::vector<int>& offsets,
+    int nunk,
+    double E, double nu, bool plane_stress,
+    const Eigen::Ref<const Eigen::MatrixXd>& boundary_xy,  // (Nb, 2)
+    const Eigen::Ref<const Eigen::MatrixXd>& boundary_n,   // (Nb, 2)
+    Eigen::MatrixXd& Mt);
+
+// Map crack unknowns q -> boundary displacements u_cr at boundary_xy
+// points. Output shape (2*Nb, nunk) packed as [ux0, uy0, ux1, uy1, ...].
+// Direct port of build_discretize.assemble_boundary_displacement_operator.
+void assemble_boundary_displacement_operator(
+    const std::vector<PolyPanelData>& panels,
+    const std::vector<int>& offsets,
+    int nunk,
+    double nu, bool plane_stress,
+    const Eigen::Ref<const Eigen::MatrixXd>& boundary_xy,  // (Nb, 2)
+    Eigen::MatrixXd& Mu);
+
+// Map BEM boundary unknowns y = [u_bc(2Nb), t_bc(2Nb)] -> traction rows
+// on crack collocation points. Output shape (2*ncol_tot, 4*Nb), arranged
+// to be hstacked with K from assemble_operator (Kz = [K | Nbc]).
+// Direct port of build_discretize.assemble_bem_boundary_to_crack_traction_operator.
+void assemble_bem_boundary_to_crack_traction_operator(
+    const std::vector<PolyPanelData>& panels,
+    double E, double nu, bool plane_stress,
+    const Eigen::Ref<const Eigen::VectorXd>& boundary_x1,  // (Nb,)
+    const Eigen::Ref<const Eigen::VectorXd>& boundary_y1,  // (Nb,)
+    const Eigen::Ref<const Eigen::VectorXd>& boundary_x2,  // (Nb,)
+    const Eigen::Ref<const Eigen::VectorXd>& boundary_y2,  // (Nb,)
+    int gauss_n,
+    Eigen::MatrixXd& Nbc);
+
 }}  // namespace vcem::crack
