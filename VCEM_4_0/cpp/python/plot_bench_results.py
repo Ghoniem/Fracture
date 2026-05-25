@@ -19,25 +19,45 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import TwoSlopeNorm
 
 
-def robust_lim(arr, pct=97.0):
+def robust_vmin_vmax(arr, pct_lo=2.0, pct_hi=98.0):
+    """Robust min/max from finite data only — respects the actual data sign.
+
+    Returns (vmin, vmax) clipped to symmetric range *only if* the data
+    straddles zero. Otherwise returns the asymmetric robust range so that
+    a strongly one-sided distribution (e.g. compressive Syy in a Brazilian
+    disk) maps across the full colormap instead of collapsing into the
+    centre.
+    """
     a = arr[np.isfinite(arr)]
     if a.size == 0:
         return -1.0, 1.0
-    lo, hi = np.percentile(a, [100 - pct, pct])
-    m = max(abs(lo), abs(hi))
-    return -m, m
+    lo = float(np.percentile(a, pct_lo))
+    hi = float(np.percentile(a, pct_hi))
+    if lo < 0.0 < hi:
+        m = max(abs(lo), abs(hi))
+        return -m, m
+    return lo, hi
 
 
-def plot_contour(ax, xs, ys, Z, *, title, cmap="jet"):
-    vmin, vmax = robust_lim(Z, pct=97.0)
-    norm = TwoSlopeNorm(vcenter=0.0, vmin=vmin, vmax=vmax) if vmin < 0 < vmax else None
-    cf = ax.contourf(xs * 1e3, ys * 1e3, Z * 1e-6,
-                     levels=30, cmap=cmap, norm=norm)
+def plot_field(ax, xs, ys, Z, *, title, cmap="jet"):
+    """pcolormesh handles NaN cleanly (transparent); contourf does not."""
+    Z_mpa = Z * 1e-6
+    vmin, vmax = robust_vmin_vmax(Z_mpa)
+    if vmin < 0 < vmax:
+        norm = TwoSlopeNorm(vcenter=0.0, vmin=vmin, vmax=vmax)
+    else:
+        norm = None  # plain linear vmin/vmax — pcolormesh accepts them directly
+
+    pcm = ax.pcolormesh(xs * 1e3, ys * 1e3, Z_mpa,
+                        shading="auto", cmap=cmap,
+                        vmin=vmin if norm is None else None,
+                        vmax=vmax if norm is None else None,
+                        norm=norm)
     ax.set_aspect("equal")
     ax.set_xlabel("x [mm]")
     ax.set_ylabel("y [mm]")
-    ax.set_title(title)
-    return cf
+    ax.set_title(f"{title}  [MPa]\nrange=({vmin:.1f}, {vmax:.1f})")
+    return pcm
 
 
 def main():
@@ -76,36 +96,46 @@ def main():
     for engine, arrs in engine_to_arrays.items():
         for comp in ("Sxx", "Syy", "Sxy"):
             fig, ax = plt.subplots(figsize=(6, 5))
-            cf = plot_contour(ax, xs, ys, arrs[comp],
-                              title=f"{comp} [MPa] -- {engine}")
-            fig.colorbar(cf, ax=ax)
+            pcm = plot_field(ax, xs, ys, arrs[comp], title=f"{comp} ({engine})")
+            fig.colorbar(pcm, ax=ax, label="MPa")
             fig.tight_layout()
             out = in_dir / f"{comp}_{engine}_contour.png"
             fig.savefig(out, dpi=200)
             plt.close(fig)
             print(f"wrote {out}")
 
+    # If both engines available, write a 1x3 row of side-by-side (cpp | py | diff) per component.
     if have_cpp and have_py:
-        print("\nDifference maps (cpp - py):")
+        print("\nside-by-side (cpp | py | cpp-py) panels:")
         for comp in ("Sxx", "Syy", "Sxy"):
-            diff = engine_to_arrays["cpp"][comp] - engine_to_arrays["py"][comp]
-            fig, ax = plt.subplots(figsize=(6, 5))
+            cpp = engine_to_arrays["cpp"][comp]
+            pyv = engine_to_arrays["py"][comp]
+            diff = cpp - pyv
+
+            fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+            pcm_c = plot_field(axes[0], xs, ys, cpp, title=f"{comp} cpp")
+            fig.colorbar(pcm_c, ax=axes[0], label="MPa")
+            pcm_p = plot_field(axes[1], xs, ys, pyv, title=f"{comp} python")
+            fig.colorbar(pcm_p, ax=axes[1], label="MPa")
+
             valid = np.isfinite(diff)
-            if not valid.any():
-                plt.close(fig); continue
-            v = float(np.nanmax(np.abs(diff)))
-            cf = ax.contourf(xs * 1e3, ys * 1e3, diff,
-                             levels=30, cmap="RdBu_r",
-                             vmin=-v, vmax=v)
-            ax.set_aspect("equal")
-            ax.set_xlabel("x [mm]"); ax.set_ylabel("y [mm]")
-            ax.set_title(f"{comp}: cpp - py [Pa]  (max|diff|={v:.2e})")
-            fig.colorbar(cf, ax=ax)
+            if valid.any():
+                v = float(np.nanpercentile(np.abs(diff), 98.0))
+                if v <= 0:
+                    v = 1.0
+                pcm_d = axes[2].pcolormesh(xs * 1e3, ys * 1e3, diff,
+                                            shading="auto", cmap="RdBu_r",
+                                            vmin=-v, vmax=v)
+                axes[2].set_aspect("equal")
+                axes[2].set_xlabel("x [mm]"); axes[2].set_ylabel("y [mm]")
+                axes[2].set_title(f"{comp} cpp - py [Pa]\nmax|diff|={float(np.nanmax(np.abs(diff))):.2e}")
+                fig.colorbar(pcm_d, ax=axes[2], label="Pa")
+
             fig.tight_layout()
-            out = in_dir / f"{comp}_diff.png"
+            out = in_dir / f"{comp}_compare.png"
             fig.savefig(out, dpi=200)
             plt.close(fig)
-            print(f"  {out}: max|diff|={v:.3e} Pa  rms={np.sqrt(np.nanmean(diff**2)):.3e} Pa")
+            print(f"  {out}")
 
 
 if __name__ == "__main__":
