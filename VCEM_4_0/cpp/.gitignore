@@ -1,0 +1,4 @@
+build/
+python/bem_cpp/*.pyd
+python/bem_cpp/*.so
+python/bem_cpp/__pycache__/
