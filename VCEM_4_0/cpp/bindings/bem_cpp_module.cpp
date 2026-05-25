@@ -14,6 +14,7 @@
 #include "vcem/bem_solver.h"
 #include "vcem/edge_dislocation.h"
 #include "vcem/kelvin.h"
+#include "vcem/kkt.h"
 #include "vcem/material.h"
 
 #if defined(VCEM_HAVE_OPENMP)
@@ -85,6 +86,48 @@ PYBIND11_MODULE(bem_cpp, m) {
         },
         py::arg("dx"), py::arg("dy"), py::arg("dBx"), py::arg("dBy"),
         py::arg("nu"), py::arg("plane_stress") = false);
+
+    // ── KKT solver — Phase 2 of KKT pipeline port ────────────────────────
+    py::enum_<vcem::crack::KKTBackend>(m, "KKTBackend")
+        .value("AutoLU",  vcem::crack::KKTBackend::AutoLU)
+        .value("DenseLU", vcem::crack::KKTBackend::DenseLU)
+        .value("BDCSVD",  vcem::crack::KKTBackend::BDCSVD)
+        .export_values();
+
+    py::class_<vcem::crack::KKTOptions>(m, "KKTOptions")
+        .def(py::init<>())
+        .def_readwrite("backend",        &vcem::crack::KKTOptions::backend)
+        .def_readwrite("ridge",          &vcem::crack::KKTOptions::ridge)
+        .def_readwrite("constraint_tol", &vcem::crack::KKTOptions::constraint_tol);
+
+    m.def("compress_constraints",
+        [](const Eigen::Ref<const Eigen::MatrixXd>& C,
+           const Eigen::Ref<const Eigen::VectorXd>& d,
+           double tol) {
+            Eigen::MatrixXd Cc; Eigen::VectorXd dc;
+            vcem::crack::compress_constraints(C, d, tol, Cc, dc);
+            return py::make_tuple(Cc, dc);
+        },
+        py::arg("C"), py::arg("d"), py::arg("tol") = 1e-12);
+
+    m.def("solve_kkt_lsq_eq",
+        [](const Eigen::Ref<const Eigen::MatrixXd>& K,
+           const Eigen::Ref<const Eigen::VectorXd>& rhs,
+           const Eigen::Ref<const Eigen::MatrixXd>& C,
+           const Eigen::Ref<const Eigen::VectorXd>& d,
+           double ridge,
+           vcem::crack::KKTBackend backend,
+           double constraint_tol) {
+            vcem::crack::KKTOptions opts;
+            opts.backend = backend;
+            opts.ridge = ridge;
+            opts.constraint_tol = constraint_tol;
+            return vcem::crack::solve_kkt_lsq_eq(K, rhs, C, d, opts);
+        },
+        py::arg("K"), py::arg("rhs"), py::arg("C"), py::arg("d"),
+        py::arg("ridge") = 0.0,
+        py::arg("backend") = vcem::crack::KKTBackend::AutoLU,
+        py::arg("constraint_tol") = 1e-12);
 
     m.def("edge_dislocation_stress",
         [](double dx, double dy, double dBx, double dBy,
