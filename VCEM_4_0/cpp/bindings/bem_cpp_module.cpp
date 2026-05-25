@@ -12,6 +12,7 @@
 #include <Eigen/Dense>
 
 #include "vcem/bem_solver.h"
+#include "vcem/edge_dislocation.h"
 #include "vcem/kelvin.h"
 #include "vcem/material.h"
 
@@ -73,6 +74,28 @@ PYBIND11_MODULE(bem_cpp, m) {
         py::arg("xf"), py::arg("yf"), py::arg("xs"), py::arg("ys"),
         py::arg("E"), py::arg("nu"), py::arg("plane_strain"),
         py::arg("r_floor") = 1e-16);
+
+    // ── Edge-dislocation (crack) kernels — Phase 1 of KKT port ────────────
+    m.def("edge_dislocation_u",
+        [](double dx, double dy, double dBx, double dBy,
+           double nu, bool plane_stress) {
+            double ux, uy;
+            vcem::crack::edge_dislocation_u(dx, dy, dBx, dBy, nu, plane_stress, ux, uy);
+            return py::make_tuple(ux, uy);
+        },
+        py::arg("dx"), py::arg("dy"), py::arg("dBx"), py::arg("dBy"),
+        py::arg("nu"), py::arg("plane_stress") = false);
+
+    m.def("edge_dislocation_stress",
+        [](double dx, double dy, double dBx, double dBy,
+           double mu, double nu, bool plane_stress) {
+            double sxx, syy, sxy;
+            vcem::crack::edge_dislocation_stress(dx, dy, dBx, dBy, mu, nu, plane_stress,
+                                                 sxx, syy, sxy);
+            return py::make_tuple(sxx, syy, sxy);
+        },
+        py::arg("dx"), py::arg("dy"), py::arg("dBx"), py::arg("dBy"),
+        py::arg("mu"), py::arg("nu"), py::arg("plane_stress") = false);
 
     m.def("kelvin_dT_dfield",
         [](double xf, double yf, double xs, double ys,
