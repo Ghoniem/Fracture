@@ -65,6 +65,7 @@ add_library(bem_core STATIC
     src/bem_solver.cpp
     src/edge_dislocation.cpp
     src/kkt.cpp
+    src/crack_assemblers.cpp
 )
 target_include_directories(bem_core PUBLIC
     ${EIGEN_INCLUDE_DIR}

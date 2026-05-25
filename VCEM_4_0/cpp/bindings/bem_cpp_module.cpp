@@ -12,6 +12,7 @@
 #include <Eigen/Dense>
 
 #include "vcem/bem_solver.h"
+#include "vcem/crack_assemblers.h"
 #include "vcem/edge_dislocation.h"
 #include "vcem/kelvin.h"
 #include "vcem/kkt.h"
@@ -109,6 +110,56 @@ PYBIND11_MODULE(bem_cpp, m) {
             return py::make_tuple(Cc, dc);
         },
         py::arg("C"), py::arg("d"), py::arg("tol") = 1e-12);
+
+    // ── Crack assembler (assemble_operator) — Phase 3 of KKT port ────────
+    //
+    // Python helper: bem_cpp.assemble_operator(poly_panels, offsets, nunk,
+    //                                         E, nu, plane_stress,
+    //                                         sigma_at_col)
+    // expects `poly_panels` to be the list-of-dicts produced by
+    // fracture_utils.Usolver.build_discretize.discretize_polylines.
+    m.def("assemble_operator",
+        [](py::list poly_panels,
+           const std::vector<int>& offsets,
+           int nunk,
+           double E, double nu, bool plane_stress,
+           const Eigen::Ref<const Eigen::MatrixXd>& sigma_at_col) {
+            // Unpack list of Python dicts into PolyPanelData structs.
+            std::vector<vcem::crack::PolyPanelData> panels;
+            panels.reserve(poly_panels.size());
+            for (py::handle h : poly_panels) {
+                py::dict d = h.cast<py::dict>();
+                vcem::crack::PolyPanelData p;
+                p.x_col   = d["x_col"].cast<Eigen::MatrixXd>();
+                p.t_col   = d["t_col"].cast<Eigen::MatrixXd>();
+                p.n_col   = d["n_col"].cast<Eigen::MatrixXd>();
+                p.src_pts = d["src_pts"].cast<Eigen::MatrixXd>();
+                p.src_t   = d["src_t"].cast<Eigen::MatrixXd>();
+                p.src_n   = d["src_n"].cast<Eigen::MatrixXd>();
+                p.src_w   = d["src_w"].cast<Eigen::VectorXd>();
+                p.Np      = d["Np"].cast<int>();
+                py::list psrc = d["panel_src"].cast<py::list>();
+                p.panel_src.reserve(psrc.size());
+                for (py::handle pp : psrc) {
+                    py::tuple t = pp.cast<py::tuple>();
+                    p.panel_src.emplace_back(t[0].cast<int>(), t[1].cast<int>());
+                }
+                panels.push_back(std::move(p));
+            }
+            Eigen::MatrixXd K;
+            Eigen::VectorXd rhs;
+            vcem::crack::assemble_operator(
+                panels, offsets, nunk, E, nu, plane_stress,
+                sigma_at_col, K, rhs);
+            return py::make_tuple(K, rhs);
+        },
+        py::arg("poly_panels"), py::arg("offsets"), py::arg("nunk"),
+        py::arg("E"), py::arg("nu"), py::arg("plane_stress"),
+        py::arg("sigma_at_col"),
+        "Assemble the crack equilibrium operator K (2*ncol_tot, nunk) and "
+        "the applied-stress rhs (2*ncol_tot,) for the given polyline-panel "
+        "discretization. Parallel via OpenMP over collocation polylines. "
+        "sigma_at_col must be (ncol_tot, 3) with columns [Sxx, Syy, Sxy].");
 
     m.def("solve_kkt_lsq_eq",
         [](const Eigen::Ref<const Eigen::MatrixXd>& K,
