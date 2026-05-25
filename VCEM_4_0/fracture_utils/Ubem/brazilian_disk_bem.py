@@ -1,0 +1,223 @@
+"""
+brazilian_disk_bem.py
+
+Brazilian disk compression BEM utilities.
+
+Key points
+----------
+- Saved stress arrays (Sxx,Syy,Sxy) are ALWAYS in Pa.
+- xs, ys are ALWAYS in meters.
+- Disk thickness `h` is part of the model and MUST be used consistently.
+  If `h` is accidentally omitted (or defaults to 1.0), stresses can jump by ~1/h.
+
+Public API
+----------
+- BrazilianDiskParams
+- compute_bem_brazilian_disk_field(params, out_dir, ...)
+- ensure_bem_field(params, out_dir, recompute=False, ...)
+- load_bem_field(out_dir)
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional, Tuple
+
+import numpy as np
+
+from fracture_utils.Ubem.bem_solver import BEMSolver2D
+from fracture_utils.Ubem.boundary_conditions import (
+    build_boundary,
+    BCSpec,
+    assemble_segment_bcs,
+    add_boundary_to_solver,
+)
+from fracture_utils.Ubem.bem_plotter import plot_centerline_stresses_circle
+from fracture_utils.Ubem.bem_stress_field import circle_inside
+from fracture_utils.Ubem.bem_stress_plotter import (
+    ContourOpts,
+    eval_and_plot_stress_components_contours_separate,
+)
+
+
+@dataclass
+class BrazilianDiskParams:
+    R: float
+    P_total: float           # total compressive force per platen (N)
+    E: float
+    nu: float
+
+    # discretization / numerics
+    n_boundary_elements: int = 120
+    gauss_n: int = 4
+    plane_strain: bool = True
+
+    # loading arc extent (deg)
+    arc_half_angle_deg: float = 15.0
+
+    # IMPORTANT: disk thickness (m)
+    h: float = 6.35e-3
+
+    # stress grid
+    n_grid: int = 120
+    pad_frac: float = 0.03
+
+
+def load_bem_field(bem_dir: Path) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    bem_dir = Path(bem_dir)
+    xs = np.load(bem_dir / "xs.npy")
+    ys = np.load(bem_dir / "ys.npy")
+    Sxx = np.load(bem_dir / "Sxx.npy")
+    Syy = np.load(bem_dir / "Syy.npy")
+    Sxy = np.load(bem_dir / "Sxy.npy")
+    return xs, ys, Sxx, Syy, Sxy
+
+
+def compute_bem_brazilian_disk_field(
+    params: BrazilianDiskParams,
+    out_dir: Path,
+    *,
+    show: bool = True,
+    save_arrays: bool = True,
+    save_contours: bool = True,
+    normalize_by: Optional[float] = None,
+) -> Tuple[BEMSolver2D, Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
+    """
+    Solve the Brazilian disk BEM problem and evaluate stresses on a grid.
+
+    Returns
+    -------
+    solver : BEMSolver2D
+    (xs, ys, Sxx, Syy, Sxy) : xs/ys in meters; stresses in Pa
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1) Build boundary
+    mesh = build_boundary({"type": "circle", "R": params.R, "n_boundary": params.n_boundary_elements, "center": (0.0, 0.0)})
+
+    # 2) BCs: distributed normal pressure on top/bottom arcs
+    theta_deg = np.asarray(mesh.theta_deg, dtype=float)
+    L = np.asarray(mesh.length, dtype=float)
+
+    arc = float(params.arc_half_angle_deg)
+    top = (theta_deg >= 90 - arc) & (theta_deg <= 90 + arc)
+    bot = (theta_deg >= -90 - arc) & (theta_deg <= -90 + arc)
+
+    L_top = float(np.sum(L[top]))
+    L_bot = float(np.sum(L[bot]))
+    if L_top <= 0 or L_bot <= 0:
+        raise RuntimeError("Top/bottom loaded arc has zero length — check arc selector or n_boundary_elements.")
+
+    # NOTE: params.P_total is force (N) per platen.
+    # Convert to physical pressure traction (Pa) on each loaded arc:
+    #     p = P_total / (L_arc * h)
+    # so stresses recovered from BEM remain in Pa without extra thickness scaling.
+    h = float(params.h)
+    pressure_top = float(params.P_total) / (L_top * h)
+    pressure_bot = float(params.P_total) / (L_bot * h)
+
+    bc_specs = [
+        BCSpec("pressure_normal", pressure_top, "theta_deg_range", (90 - arc, 90 + arc)),
+        BCSpec("pressure_normal", pressure_bot, "theta_deg_range", (-90 - arc, -90 + arc)),
+    ]
+    is_traction, bc_x, bc_y = assemble_segment_bcs(mesh, bc_specs=bc_specs, default=("traction", 0.0, 0.0))
+
+    # 3) Solve
+    solver = BEMSolver2D(E=params.E, nu=params.nu, h=float(params.h), plane_strain=bool(params.plane_strain))
+    add_boundary_to_solver(solver, mesh, is_traction, bc_x, bc_y)
+    solver.solve(gauss_n=int(params.gauss_n))
+
+    # 4) Centerline plot (optional)
+    try:
+        plot_centerline_stresses_circle(
+            solver,
+            R=float(params.R),
+            out_dir=out_dir,
+            basename="brazilian_disk_line_stresses",
+            normalize_by=normalize_by,
+            n_points=100,
+        )
+    except Exception:
+        # plotting helper should never break the solve pipeline
+        pass
+
+    # 5) Contour stress maps + arrays
+    bbox = (-params.R, params.R, -params.R, params.R)
+    inside = circle_inside(params.R, center=(0.0, 0.0), pad=float(params.pad_frac) * params.R)
+
+    if save_contours:
+        opts_common = dict(
+            dpi=300,
+            show=bool(show),
+            robust=True,
+            robust_pct=97.0,
+            n_levels=30,
+            n_line_levels=20,
+            x_scale=1e3, y_scale=1e3,
+            x_label="x [mm]", y_label="y [mm]",
+            value_scale=1e-6,
+            cbar_label="Stress [MPa]",
+            cmap="jet",
+        )
+        opts_xx = ContourOpts(**opts_common, title="σ_xx", symmetric=True)
+        opts_yy = ContourOpts(**opts_common, title="σ_yy", symmetric=True)
+        opts_xy = ContourOpts(**opts_common, title="σ_xy", symmetric=True)
+    else:
+        # still compute arrays; no figures
+        opts_xx = opts_yy = opts_xy = None
+
+    xs, ys, Sxx, Syy, Sxy, _paths = eval_and_plot_stress_components_contours_separate(
+        solver,
+        bbox=bbox,
+        out_dir=out_dir,
+        basename="brazilian_disk",
+        n=int(params.n_grid),
+        inside=inside,
+        normalize_by=None,     # keep Pa in arrays
+        opts_xx=opts_xx,
+        opts_yy=opts_yy,
+        opts_xy=opts_xy,
+    )
+
+    if save_arrays:
+        np.save(out_dir / "xs.npy", xs)
+        np.save(out_dir / "ys.npy", ys)
+        np.save(out_dir / "Sxx.npy", Sxx)
+        np.save(out_dir / "Syy.npy", Syy)
+        np.save(out_dir / "Sxy.npy", Sxy)
+
+    return solver, (xs, ys, Sxx, Syy, Sxy)
+
+
+def ensure_bem_field(
+    params: BrazilianDiskParams,
+    out_dir: Path,
+    *,
+    recompute: bool = False,
+    show: bool = True,
+    save_contours: bool = True,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    If out_dir already contains saved arrays and recompute=False, just load them.
+    Otherwise compute a fresh BEM solution and overwrite arrays.
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    req = ["xs.npy", "ys.npy", "Sxx.npy", "Syy.npy", "Sxy.npy"]
+    have = all((out_dir / f).exists() for f in req)
+
+    if have and not recompute:
+        return load_bem_field(out_dir)
+
+    _solver, field = compute_bem_brazilian_disk_field(
+        params,
+        out_dir,
+        show=show,
+        save_arrays=True,
+        save_contours=save_contours,
+        normalize_by=None,
+    )
+    return field
