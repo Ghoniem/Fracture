@@ -43,6 +43,16 @@ public:
                        Eigen::MatrixXd& Syy,
                        Eigen::MatrixXd& Sxy) const;
 
+    // Evaluate stress at an arbitrary cloud of points (xs[i], ys[i]).
+    // For disk-conforming polar or any non-tensor grid. xs and ys must
+    // have the same length. Returns the number of points evaluated.
+    int stress_at_points(const std::vector<double>& xs,
+                         const std::vector<double>& ys,
+                         int gauss_n,
+                         Eigen::VectorXd& Sxx,
+                         Eigen::VectorXd& Syy,
+                         Eigen::VectorXd& Sxy) const;
+
     // Read-only accessors for the boundary solution.
     const std::vector<double>& u_x() const { return u_x_; }
     const std::vector<double>& u_y() const { return u_y_; }

@@ -134,6 +134,20 @@ PYBIND11_MODULE(bem_cpp, m) {
             "Evaluate (Sxx, Syy, Sxy) on the tensor-product grid (ys, xs). "
             "Output arrays have shape (len(ys), len(xs)).")
 
+        .def("stress_at_points",
+            [](const BEMSolver2D& self,
+               const std::vector<double>& xs,
+               const std::vector<double>& ys,
+               int gauss_n) {
+                Eigen::VectorXd Sxx, Syy, Sxy;
+                self.stress_at_points(xs, ys, gauss_n, Sxx, Syy, Sxy);
+                return py::make_tuple(Sxx, Syy, Sxy);
+            },
+            py::arg("xs"), py::arg("ys"), py::arg("gauss_n") = 12,
+            "Evaluate (Sxx, Syy, Sxy) at the scattered points (xs[i], ys[i]). "
+            "Use for polar / disk-conforming / arbitrary clouds of points. "
+            "Returns 1-D arrays of length len(xs).")
+
         // Read-only properties returning numpy arrays (zero-copy via std::vector ref)
         .def_property_readonly("u_x", [](const BEMSolver2D& s) {
             return py::array_t<double>(s.u_x().size(), s.u_x().data());

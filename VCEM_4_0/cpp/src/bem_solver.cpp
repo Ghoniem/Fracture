@@ -372,4 +372,48 @@ int BEMSolver2D::stress_on_grid(const std::vector<double>& xs,
     return nx * ny;
 }
 
+int BEMSolver2D::stress_at_points(const std::vector<double>& xs,
+                                  const std::vector<double>& ys,
+                                  int gauss_n,
+                                  Eigen::VectorXd& Sxx,
+                                  Eigen::VectorXd& Syy,
+                                  Eigen::VectorXd& Sxy) const
+{
+    if (!solved_) throw std::runtime_error("Call solve() first.");
+
+    const int n = static_cast<int>(xs.size());
+    if (static_cast<int>(ys.size()) != n) {
+        throw std::runtime_error("stress_at_points: xs and ys must have equal size");
+    }
+
+    Sxx.resize(n);
+    Syy.resize(n);
+    Sxy.resize(n);
+
+    const GaussRule& gr = gauss_legendre(gauss_n);
+
+    const auto& segs = segs_;
+    const auto& ux   = u_x_;
+    const auto& uy   = u_y_;
+    const auto& tx   = t_x_;
+    const auto& ty   = t_y_;
+    const double E   = E_;
+    const double nu  = nu_;
+    const bool   ps  = plane_strain_;
+
+#if defined(VCEM_HAVE_OPENMP)
+    #pragma omp parallel for schedule(dynamic, 64)
+#endif
+    for (int i = 0; i < n; ++i) {
+        double sxx, syy, sxy;
+        stress_with_rule(segs, ux, uy, tx, ty, E, nu, ps,
+                         xs[i], ys[i], gr, sxx, syy, sxy);
+        Sxx(i) = sxx;
+        Syy(i) = syy;
+        Sxy(i) = sxy;
+    }
+
+    return n;
+}
+
 }}  // namespace vcem::bem
