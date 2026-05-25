@@ -1,0 +1,16 @@
+{
+  "outer_cycle": 1,
+  "saved_at": "2026-05-24T16:09:24.776442",
+  "source_bem_dir": "D:\\GitHub\\Fracture\\VCM_3_4\\output\\NetworkSimulations\\20260524_152114_0364465d",
+  "destination_dir": "D:\\GitHub\\Fracture\\VCM_3_4\\output\\NetworkSimulations\\20260524_152114_0364465d\\outer_01\\cycle_01_post_simplify",
+  "copied_files": [
+    "outer_boundary_xs.npy",
+    "outer_boundary_ys.npy",
+    "outer_boundary_Sxx.npy",
+    "outer_boundary_Syy.npy",
+    "outer_boundary_Sxy.npy",
+    "outer_boundary_sxx_contour.png",
+    "outer_boundary_syy_contour.png",
+    "outer_boundary_sxy_contour.png"
+  ]
+}
