@@ -64,8 +64,12 @@ def build_problem(n_grid: int):
     L         = np.asarray(mesh.length, dtype=float)
 
     arc = ARC_HALF_ANGLE
-    top = (theta_deg >=  90 - arc) & (theta_deg <=  90 + arc)
-    bot = (theta_deg >= -90 - arc) & (theta_deg <= -90 + arc)
+    # Match the 1e-9 deg tolerance used inside _select_indices() so the
+    # L_top / L_bot pressure normalization here lines up with the segments
+    # assemble_segment_bcs actually selects.
+    eps = 1.0e-9
+    top = (theta_deg >=  90 - arc - eps) & (theta_deg <=  90 + arc + eps)
+    bot = (theta_deg >= -90 - arc - eps) & (theta_deg <= -90 + arc + eps)
     L_top = float(np.sum(L[top]))
     L_bot = float(np.sum(L[bot]))
     pressure_top = P_TOTAL / (L_top * H_THICK)

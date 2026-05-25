@@ -348,11 +348,17 @@ def _select_indices(mesh: BoundaryMesh, kind: SelectorKind, data) -> np.ndarray:
             raise ValueError("theta_deg_range selector requires selector_data=(theta_min_deg, theta_max_deg)")
         tmin, tmax = float(data[0]), float(data[1])
         th = mesh.theta_deg
-        # handle wrap if needed
+        # arctan2-derived theta_deg can land ~1e-14 deg off integer
+        # endpoints (e.g. -105.00000000000001 for the segment intended at
+        # -105 deg). A strict comparison drops that segment, producing
+        # asymmetric BC selection and a measurably asymmetric stress field.
+        # Absorb the noise with a 1e-9 deg tolerance (far smaller than any
+        # realistic loaded-arc resolution).
+        eps = 1.0e-9
         if tmin <= tmax:
-            mask = (th >= tmin) & (th <= tmax)
+            mask = (th >= tmin - eps) & (th <= tmax + eps)
         else:
-            mask = (th >= tmin) | (th <= tmax)
+            mask = (th >= tmin - eps) | (th <= tmax + eps)
         return np.flatnonzero(mask).astype(int)
 
     raise ValueError(f"Unknown selector_kind: {kind!r}")
