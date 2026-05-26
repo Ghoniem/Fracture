@@ -58,85 +58,95 @@ ENGINE_CELL = {
 # Inserted at the end of the preamble cell (cell index 4 in the source).
 ENGINE_PATCHES = """
 
-# ── Backend dispatch: inject ENGINE into every KKT solve and intersection
-# ── detector call without rewriting the case functions. Module-level
-# ── monkey-patches set kwargs.setdefault('engine', ENGINE), so case code
-# ── that already passes its own engine value still wins.
-print(f'Engine backend: {ENGINE!r}')
+# ── Backend dispatch (re-runnable: no Kernel-Restart needed after edits) ──
+# This block force-reloads every module we monkey-patch and re-installs the
+# patches every time the cell runs. That way, after any code change to the
+# patched modules you can just re-run the preamble cell instead of
+# Restart-Kernel-and-Run-All.
+import sys as _sys, importlib as _il
 
-# The notebook's existing sys.path only has repo_root (= VCEM_4_0); the
-# C++ extension lives under VCEM_4_0/cpp/python/. Add it here so engine='cpp'
-# actually runs C++ instead of silently falling back to Python.
-import sys as _sys
+# Add VCEM_4_0/cpp/python to sys.path so `import bem_cpp` resolves. The
+# original preamble only adds repo_root (= VCEM_4_0).
 _cpp_pkg_dir = str(repo_root / 'cpp' / 'python')
 if _cpp_pkg_dir not in _sys.path:
     _sys.path.insert(0, _cpp_pkg_dir)
 
+# Try to import bem_cpp, fall back to engine='python' if missing.
+_CPP_AVAILABLE = False
+_bem_cpp_err = None
 try:
-    import bem_cpp  # noqa: F401
+    if 'bem_cpp' in _sys.modules:
+        bem_cpp = _il.reload(_sys.modules['bem_cpp'])
+    else:
+        import bem_cpp  # noqa: F401
     _CPP_AVAILABLE = True
 except Exception as _e:
-    _CPP_AVAILABLE = False
+    _bem_cpp_err = _e
     if ENGINE == 'cpp':
-        print(f'  WARNING: bem_cpp not importable ({_e!r}); falling back to python.')
-        print(f'           (looked in {_cpp_pkg_dir}; build with VCEM_4_0/cpp/README.md)')
         ENGINE = 'python'
 
-if ENGINE == 'cpp':
-    print('  C++ OpenMP threads:', bem_cpp.openmp_max_threads())
-
+# Force-reload every patched module so a previous run's stale `_orig_*`
+# closure can't leak across edits. We capture _orig_* AFTER the reload.
 import fracture_utils.Usolver.parametrization as _para_mod
-if not getattr(_para_mod.DCENetworkStaticV4, '_engine_patched', False):
-    _orig_solve = _para_mod.DCENetworkStaticV4.solve
-
-    def _solve_with_engine(self, *args, **kwargs):
-        kwargs.setdefault('engine', ENGINE)
-        return _orig_solve(self, *args, **kwargs)
-
-    _para_mod.DCENetworkStaticV4.solve = _solve_with_engine
-    _para_mod.DCENetworkStaticV4._engine_patched = True
-
 import fracture_utils.Ugenerator.generator as _gen_mod
-if not getattr(_gen_mod.CrackNetworkGenerator, '_engine_patched', False):
-    _orig_det = _gen_mod.CrackNetworkGenerator.detect_and_split_intersections
-
-    def _det_with_engine(self, *args, **kwargs):
-        kwargs.setdefault('engine', ENGINE)
-        return _orig_det(self, *args, **kwargs)
-
-    _gen_mod.CrackNetworkGenerator.detect_and_split_intersections = _det_with_engine
-    _gen_mod.CrackNetworkGenerator._engine_patched = True
-
-# BEM-side: route engine into ensure_bem_field (and compute_bem_brazilian_disk_field
-# which it calls internally) and into solve_bem_with_extra_boundary_tractions.
-# These swap BEMSolver2D for bem_cpp.BEMSolver2D under the hood.
 import fracture_utils.Ubem.brazilian_disk_bem as _bdb_mod
-if not getattr(_bdb_mod, '_engine_patched', False):
-    _orig_ensure = _bdb_mod.ensure_bem_field
-    _orig_compute = _bdb_mod.compute_bem_brazilian_disk_field
-
-    def _ensure_with_engine(*args, **kwargs):
-        kwargs.setdefault('engine', ENGINE)
-        return _orig_ensure(*args, **kwargs)
-
-    def _compute_with_engine(*args, **kwargs):
-        kwargs.setdefault('engine', ENGINE)
-        return _orig_compute(*args, **kwargs)
-
-    _bdb_mod.ensure_bem_field = _ensure_with_engine
-    _bdb_mod.compute_bem_brazilian_disk_field = _compute_with_engine
-    _bdb_mod._engine_patched = True
-
 import fracture_utils.Ubem.disk_iterative_coupling as _dic_mod
-if not getattr(_dic_mod, '_engine_patched', False):
-    _orig_sbwet = _dic_mod.solve_bem_with_extra_boundary_tractions
+for _mod in (_para_mod, _gen_mod, _bdb_mod, _dic_mod):
+    _il.reload(_mod)
+# Re-bind after reload (the names above now point at the old module
+# objects; the reloaded ones are returned by _il.reload and stored back
+# in sys.modules, but we want the fresh attributes here).
+import fracture_utils.Usolver.parametrization as _para_mod
+import fracture_utils.Ugenerator.generator as _gen_mod
+import fracture_utils.Ubem.brazilian_disk_bem as _bdb_mod
+import fracture_utils.Ubem.disk_iterative_coupling as _dic_mod
 
-    def _sbwet_with_engine(*args, **kwargs):
-        kwargs.setdefault('engine', ENGINE)
-        return _orig_sbwet(*args, **kwargs)
+_orig_solve = _para_mod.DCENetworkStaticV4.solve
+def _solve_with_engine(self, *args, **kwargs):
+    kwargs.setdefault('engine', ENGINE)
+    return _orig_solve(self, *args, **kwargs)
+_para_mod.DCENetworkStaticV4.solve = _solve_with_engine
 
-    _dic_mod.solve_bem_with_extra_boundary_tractions = _sbwet_with_engine
-    _dic_mod._engine_patched = True
+_orig_det = _gen_mod.CrackNetworkGenerator.detect_and_split_intersections
+def _det_with_engine(self, *args, **kwargs):
+    kwargs.setdefault('engine', ENGINE)
+    return _orig_det(self, *args, **kwargs)
+_gen_mod.CrackNetworkGenerator.detect_and_split_intersections = _det_with_engine
+
+_orig_ensure  = _bdb_mod.ensure_bem_field
+_orig_compute = _bdb_mod.compute_bem_brazilian_disk_field
+def _ensure_with_engine(*args, **kwargs):
+    kwargs.setdefault('engine', ENGINE)
+    return _orig_ensure(*args, **kwargs)
+def _compute_with_engine(*args, **kwargs):
+    kwargs.setdefault('engine', ENGINE)
+    return _orig_compute(*args, **kwargs)
+_bdb_mod.ensure_bem_field = _ensure_with_engine
+_bdb_mod.compute_bem_brazilian_disk_field = _compute_with_engine
+
+_orig_sbwet = _dic_mod.solve_bem_with_extra_boundary_tractions
+def _sbwet_with_engine(*args, **kwargs):
+    kwargs.setdefault('engine', ENGINE)
+    return _orig_sbwet(*args, **kwargs)
+_dic_mod.solve_bem_with_extra_boundary_tractions = _sbwet_with_engine
+
+# Loud banner so the user can't miss which backend is actually live.
+print()
+print('=' * 62)
+print(f' ACTIVE ENGINE = {ENGINE.upper():<6s} '
+      + ('(C++/OpenMP, %d threads)' % bem_cpp.openmp_max_threads() if _CPP_AVAILABLE and ENGINE == 'cpp'
+         else '(pure Python)'))
+if ENGINE == 'cpp':
+    print(' Patched: DCENetworkStaticV4.solve, detect_and_split_intersections,')
+    print('          ensure_bem_field, compute_bem_brazilian_disk_field,')
+    print('          solve_bem_with_extra_boundary_tractions')
+    print(f' bem_cpp v{bem_cpp.__version__} from {bem_cpp.__file__}')
+else:
+    if _bem_cpp_err is not None:
+        print(f' Note: bem_cpp import failed: {_bem_cpp_err!r}')
+        print(f'       (looked in {_cpp_pkg_dir})')
+print('=' * 62)
+import sys as _sys2; _sys2.stdout.flush()
 """
 
 
