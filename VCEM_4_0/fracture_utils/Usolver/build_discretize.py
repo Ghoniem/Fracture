@@ -151,6 +151,12 @@ def discretize_polylines(
     _all_L = [float(p.get("total_length", 0.0)) for p in polylines]
     _L_max = max((L for L in _all_L if L > 0.0), default=0.0)
 
+    # Aggregate sub-threshold-merge bookkeeping: emit ONE summary warning
+    # per discretize_polylines call instead of one per polyline. Routine
+    # tip-cluster cleanup (a handful of sub-threshold panels at the tips
+    # of long polylines, power=2 clustering) is benign and noisy.
+    _merge_log: List[Tuple[int, int, int, float]] = []   # (pid, n_merged, Np_after, min_length)
+
     for pid, p in enumerate(polylines):
         kind = str(p.get("kind", "polyline")).lower().strip()
         vids_path = p.get("path_vertex_ids", [])
@@ -226,13 +232,7 @@ def discretize_polylines(
             s_nodes, n_merged = _merge_short_panels(s_nodes, min_length)
             if n_merged > 0:
                 Np_new = int(s_nodes.size - 1)
-                warnings.warn(
-                    f"Polyline pid={pid}: merged {n_merged} sub-threshold panels "
-                    f"(min_length = {min_panel_length_ratio:.0e} * L = {min_length:.3e}); "
-                    f"Np {Np} -> {Np_new}.",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
+                _merge_log.append((int(pid), int(n_merged), int(Np_new), float(min_length)))
                 Np = Np_new
 
         if collocation_mode == "nodes" and Np >= 2:
@@ -366,6 +366,18 @@ def discretize_polylines(
             v_end=int(v_end),
             L=float(L),
         ))
+
+    # One summary line for any sub-threshold merges that happened across
+    # all polylines this call. Suppresses the previous noisy per-polyline
+    # RuntimeWarning that fired on every cycle for routine tip-cluster
+    # cleanup.
+    if _merge_log:
+        n_total = sum(m[1] for m in _merge_log)
+        pids = sorted({m[0] for m in _merge_log})
+        print(f"[discretize] merged {n_total} sub-threshold panels across "
+              f"{len(_merge_log)} polylines (pids={pids[:8]}"
+              f"{'...' if len(pids) > 8 else ''}, min_panel_length_ratio="
+              f"{min_panel_length_ratio:.0e})")
 
     return poly_panels
 

@@ -78,29 +78,33 @@ def main():
           f"ratio = {ratio_raw:.2e}, min/L = {ds_raw.min()/L:.3e}")
 
     # ── With guard at 1e-3 * L ──────────────────────────────────────────
-    fired = []
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always", RuntimeWarning)
+    # As of the merge-warning aggregation, discretize_polylines emits ONE
+    # summary print to stdout instead of a RuntimeWarning per polyline.
+    # Capture stdout so we can verify the summary fired.
+    import io, contextlib
+    _buf = io.StringIO()
+    with contextlib.redirect_stdout(_buf):
         panels_guarded = discretize_polylines(
             net, polylines, min_panel_length_ratio=1.0e-3, **common)
-        for w in caught:
-            if "sub-threshold panels" in str(w.message):
-                fired.append(str(w.message))
+    summary_out = _buf.getvalue()
+    summary_lines = [ln for ln in summary_out.splitlines()
+                     if "sub-threshold panels" in ln]
     ds_guarded = panel_ds(panels_guarded)
     ratio_guarded = float(ds_guarded.max() / ds_guarded.min())
     print(f"[guard 1e-3] Np = {ds_guarded.size}, "
           f"ds min/max = {ds_guarded.min():.3e} / {ds_guarded.max():.3e}, "
           f"ratio = {ratio_guarded:.2e}, min/L = {ds_guarded.min()/L:.3e}")
-    print(f"             warnings fired: {len(fired)}")
-    for w in fired:
-        print(f"               -> {w}")
+    print(f"             summary lines: {len(summary_lines)}")
+    for ln in summary_lines:
+        print(f"               -> {ln}")
 
     # Assertions
     assert ds_raw.min() / L < 1.0e-3, \
         "Test setup didn't produce sub-threshold panels; tune tip_cluster_power."
     assert ds_guarded.min() / L >= 1.0e-3 - 1e-12, \
         f"Guard failed: smallest panel still {ds_guarded.min()/L:.3e} * L < threshold"
-    assert len(fired) >= 1, "Expected a RuntimeWarning to be emitted"
+    assert len(summary_lines) >= 1, \
+        "Expected one '[discretize] merged ... sub-threshold panels ...' summary line"
     assert ds_guarded.size < ds_raw.size, \
         f"Guard didn't reduce panel count: {ds_raw.size} -> {ds_guarded.size}"
 
