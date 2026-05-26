@@ -102,9 +102,25 @@ import fracture_utils.Ugenerator.crack_network_simplifier as _simp_mod
 import fracture_utils.Ubem.brazilian_disk_bem     as _bdb_mod
 import fracture_utils.Ubem.disk_iterative_coupling as _dic_mod
 import fracture_utils.Ubem.disk_network_propagation as _dnp_mod
-# Reload leaves before their consumers; parametrization last among Usolver.
+# Upropagation leaves -- direction (MTS law), evaluate (tip SIFs),
+# geometry_update (extend_tip), step_control + tip_state, then
+# network_growth + propagator that consume them.
+import fracture_utils.Upropagation.direction       as _dir_mod
+import fracture_utils.Upropagation.tip_state       as _tip_mod
+import fracture_utils.Upropagation.geometry_update as _gu_mod
+import fracture_utils.Upropagation.step_control    as _sc_mod
+import fracture_utils.Upropagation.toughness       as _tough_mod
+import fracture_utils.Upropagation.evaluate        as _eval_mod
+import fracture_utils.Upropagation.network_growth  as _ng_mod
+import fracture_utils.Upropagation.propagator      as _prop_mod
+# Reload leaves before their consumers; parametrization last among Usolver;
+# direction first among Upropagation so MaximumHoopStressLaw's
+# kii_noise_ratio / max_kink_deg additions actually take effect.
 for _mod in (_bdisc_mod, _con_mod, _kkt_mod, _disp_mod, _para_mod,
-              _simp_mod, _gen_mod, _bdb_mod, _dic_mod, _dnp_mod):
+              _simp_mod, _gen_mod,
+              _dir_mod, _tip_mod, _gu_mod, _sc_mod, _tough_mod,
+              _eval_mod, _ng_mod, _prop_mod,
+              _bdb_mod, _dic_mod, _dnp_mod):
     _il.reload(_mod)
 # Re-bind after reload.
 import fracture_utils.Usolver.parametrization     as _para_mod
