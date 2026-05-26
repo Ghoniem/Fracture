@@ -86,20 +86,30 @@ except Exception as _e:
     if ENGINE == 'cpp':
         ENGINE = 'python'
 
-# Force-reload every patched module so a previous run's stale `_orig_*`
-# closure can't leak across edits. We capture _orig_* AFTER the reload.
-import fracture_utils.Usolver.parametrization as _para_mod
-import fracture_utils.Ugenerator.generator as _gen_mod
-import fracture_utils.Ubem.brazilian_disk_bem as _bdb_mod
+# Force-reload every patched module AND its non-trivial dependencies
+# (build_discretize, constraints, KKT, cpp_dispatch) -- reloading
+# parametrization alone is not enough because its `from .build_discretize
+# import discretize_polylines` re-runs but gets the cached build_discretize
+# from sys.modules. We have to reload the *leaves* first, in dependency
+# order, before reloading parametrization that re-binds from them.
+import fracture_utils.Usolver.build_discretize    as _bdisc_mod
+import fracture_utils.Usolver.constraints         as _con_mod
+import fracture_utils.Usolver.KKT                 as _kkt_mod
+import fracture_utils.Usolver.cpp_dispatch        as _disp_mod
+import fracture_utils.Usolver.parametrization     as _para_mod
+import fracture_utils.Ugenerator.generator        as _gen_mod
+import fracture_utils.Ugenerator.crack_network_simplifier as _simp_mod
+import fracture_utils.Ubem.brazilian_disk_bem     as _bdb_mod
 import fracture_utils.Ubem.disk_iterative_coupling as _dic_mod
-for _mod in (_para_mod, _gen_mod, _bdb_mod, _dic_mod):
+import fracture_utils.Ubem.disk_network_propagation as _dnp_mod
+# Reload leaves before their consumers; parametrization last among Usolver.
+for _mod in (_bdisc_mod, _con_mod, _kkt_mod, _disp_mod, _para_mod,
+              _simp_mod, _gen_mod, _bdb_mod, _dic_mod, _dnp_mod):
     _il.reload(_mod)
-# Re-bind after reload (the names above now point at the old module
-# objects; the reloaded ones are returned by _il.reload and stored back
-# in sys.modules, but we want the fresh attributes here).
-import fracture_utils.Usolver.parametrization as _para_mod
-import fracture_utils.Ugenerator.generator as _gen_mod
-import fracture_utils.Ubem.brazilian_disk_bem as _bdb_mod
+# Re-bind after reload.
+import fracture_utils.Usolver.parametrization     as _para_mod
+import fracture_utils.Ugenerator.generator        as _gen_mod
+import fracture_utils.Ubem.brazilian_disk_bem     as _bdb_mod
 import fracture_utils.Ubem.disk_iterative_coupling as _dic_mod
 
 _orig_solve = _para_mod.DCENetworkStaticV4.solve
