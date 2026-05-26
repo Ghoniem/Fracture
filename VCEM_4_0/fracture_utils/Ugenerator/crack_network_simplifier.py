@@ -237,38 +237,99 @@ class CrackNetworkSimplifier:
         return stats
     
     def _merge_close_vertices(self) -> int:
-        """Merge vertices that are very close together"""
+        """Merge vertices that are very close together.
+
+        Uses a uniform-grid spatial hash so candidate pairs are restricted
+        to the same and 8 adjacent grid cells (cell_size = tol guarantees
+        any two points within `tol` of each other land in this 3x3
+        neighbourhood). Effective complexity drops from O(V^2) brute force
+        to O(V) when vertices are spread; falls back to O(V^2) only when
+        every vertex lies inside a single cell (i.e. all within `tol` of
+        each other).
+
+        Pair ordering and merge semantics are preserved bit-exactly: the
+        produced (n1, n2) pair list is sorted by the original node-index
+        order, so the greedy merge below produces the same final graph as
+        the brute-force version.
+        """
         tol = self.config.merge_vertex_tolerance
-        merged_count = 0
-        
-        nodes_to_merge = []
+        if tol <= 0:
+            return 0
+
         nodes = list(self.G.nodes())
-        
-        for i, n1 in enumerate(nodes):
-            if n1 not in self.G.nodes():  # Already merged
-                continue
-            pos1 = np.array(self.G.nodes[n1]['pos'])
-            
-            for n2 in nodes[i+1:]:
-                if n2 not in self.G.nodes():
-                    continue
-                pos2 = np.array(self.G.nodes[n2]['pos'])
-                
-                dist = np.linalg.norm(pos2 - pos1)
-                if dist < tol:
-                    nodes_to_merge.append((n1, n2))
-        
-        # Perform merges
+        if len(nodes) < 2:
+            return 0
+
+        positions = np.asarray([self.G.nodes[n]['pos'] for n in nodes], dtype=float)
+        if positions.ndim != 2 or positions.shape[1] != 2:
+            # Defensive: fall back to brute force if positions aren't 2-D points.
+            return self._merge_close_vertices_bruteforce(nodes, tol)
+
+        cell_size = float(tol)
+        cells = np.floor(positions / cell_size).astype(np.int64)   # (V, 2)
+
+        cell_to_idx: Dict[Tuple[int, int], List[int]] = {}
+        for idx, (cx, cy) in enumerate(cells):
+            cell_to_idx.setdefault((int(cx), int(cy)), []).append(idx)
+
+        tol2 = tol * tol
+        pairs_set: Set[Tuple[int, int]] = set()
+        for (cx, cy), idx_list in cell_to_idx.items():
+            # Pool candidate indices from this cell + 8 neighbours.
+            cand: List[int] = []
+            for dcx in (-1, 0, 1):
+                for dcy in (-1, 0, 1):
+                    key = (cx + dcx, cy + dcy)
+                    other = cell_to_idx.get(key)
+                    if other is not None:
+                        cand.extend(other)
+            cand.sort()
+            for i in idx_list:
+                pi0, pi1 = positions[i, 0], positions[i, 1]
+                for j in cand:
+                    if j <= i:
+                        continue
+                    dx = pi0 - positions[j, 0]
+                    dy = pi1 - positions[j, 1]
+                    if dx * dx + dy * dy < tol2:
+                        pairs_set.add((i, j))
+
+        # Sort by (i, j) so merge order matches the original i-major nested loop.
+        nodes_to_merge = [(nodes[i], nodes[j]) for (i, j) in sorted(pairs_set)]
+
+        merged_count = 0
         for n1, n2 in nodes_to_merge:
             if n1 in self.G.nodes() and n2 in self.G.nodes():
-                # Merge n2 into n1
                 for neighbor in list(self.G.neighbors(n2)):
                     if neighbor != n1:
                         self.G.add_edge(n1, neighbor)
                 self.G.remove_node(n2)
                 merged_count += 1
-        
+
         return merged_count
+
+    def _merge_close_vertices_bruteforce(self, nodes: List, tol: float) -> int:
+        """O(V^2) reference implementation, kept as fallback / for testing."""
+        nodes_to_merge = []
+        for i, n1 in enumerate(nodes):
+            if n1 not in self.G.nodes():
+                continue
+            pos1 = np.array(self.G.nodes[n1]['pos'])
+            for n2 in nodes[i + 1:]:
+                if n2 not in self.G.nodes():
+                    continue
+                pos2 = np.array(self.G.nodes[n2]['pos'])
+                if np.linalg.norm(pos2 - pos1) < tol:
+                    nodes_to_merge.append((n1, n2))
+        merged = 0
+        for n1, n2 in nodes_to_merge:
+            if n1 in self.G.nodes() and n2 in self.G.nodes():
+                for neighbor in list(self.G.neighbors(n2)):
+                    if neighbor != n1:
+                        self.G.add_edge(n1, neighbor)
+                self.G.remove_node(n2)
+                merged += 1
+        return merged
     
     def _remove_small_edges(self) -> int:
         """Remove edges shorter than minimum length"""
