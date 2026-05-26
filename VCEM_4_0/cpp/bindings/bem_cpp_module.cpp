@@ -14,6 +14,7 @@
 #include "vcem/bem_solver.h"
 #include "vcem/crack_assemblers.h"
 #include "vcem/edge_dislocation.h"
+#include "vcem/edge_intersection.h"
 #include "vcem/kelvin.h"
 #include "vcem/kkt.h"
 #include "vcem/material.h"
@@ -160,6 +161,34 @@ PYBIND11_MODULE(bem_cpp, m) {
         "the applied-stress rhs (2*ncol_tot,) for the given polyline-panel "
         "discretization. Parallel via OpenMP over collocation polylines. "
         "sigma_at_col must be (ncol_tot, 3) with columns [Sxx, Syy, Sxy].");
+
+    // ── Topology: segment-segment intersection detection ─────────────────
+    // Returns an (M, 4) numpy array with columns [i, j, x, y]. i and j are
+    // cast to double for uniform return type; caller can cast back to int.
+    m.def("detect_segment_intersections",
+        [](const Eigen::Ref<const Eigen::MatrixXd>& edges_p1,
+           const Eigen::Ref<const Eigen::MatrixXd>& edges_p2,
+           const Eigen::Ref<const Eigen::MatrixXi>& edge_nodes,
+           double endpoint_tol,
+           double parallel_tol) {
+            auto recs = vcem::topology::detect_segment_intersections(
+                edges_p1, edges_p2, edge_nodes, endpoint_tol, parallel_tol);
+            Eigen::MatrixXd out(static_cast<Eigen::Index>(recs.size()), 4);
+            for (std::size_t k = 0; k < recs.size(); ++k) {
+                out(static_cast<Eigen::Index>(k), 0) = static_cast<double>(recs[k].i);
+                out(static_cast<Eigen::Index>(k), 1) = static_cast<double>(recs[k].j);
+                out(static_cast<Eigen::Index>(k), 2) = recs[k].x;
+                out(static_cast<Eigen::Index>(k), 3) = recs[k].y;
+            }
+            return out;
+        },
+        py::arg("edges_p1"), py::arg("edges_p2"), py::arg("edge_nodes"),
+        py::arg("endpoint_tol") = 0.05,
+        py::arg("parallel_tol") = 1.0e-10,
+        "Brute-force O(E^2) segment-segment intersection detection, "
+        "OpenMP-parallel over the outer edge loop. Returns an (M, 4) "
+        "matrix [i, j, x, y] sorted by (i, j); skips pairs that share a "
+        "vertex (adjacent edges).");
 
     // Helper used by every crack-assembler binding: unpack a Python
     // poly_panels list-of-dicts into a vector<PolyPanelData>.

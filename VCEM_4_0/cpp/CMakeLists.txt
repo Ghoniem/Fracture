@@ -66,6 +66,7 @@ add_library(bem_core STATIC
     src/edge_dislocation.cpp
     src/kkt.cpp
     src/crack_assemblers.cpp
+    src/edge_intersection.cpp
 )
 target_include_directories(bem_core PUBLIC
     ${EIGEN_INCLUDE_DIR}
