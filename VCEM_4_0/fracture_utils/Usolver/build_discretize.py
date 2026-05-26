@@ -141,14 +141,29 @@ def discretize_polylines(
 
     poly_panels: List[dict] = []
 
+    # Length-aware panel budget: rather than give every polyline the same
+    # 2*n_crack_elements panels (which over-resolves short branches and
+    # bloats the KKT system), scale by L / L_max so the *target* per-panel
+    # length is roughly the same across polylines. Long polylines still get
+    # the full budget, short ones drop to MIN_PANELS_PER_POLYLINE.
+    MIN_PANELS_PER_POLYLINE = 8
+    NP_MAX = max(MIN_PANELS_PER_POLYLINE, int(2 * n_crack_elements))
+    _all_L = [float(p.get("total_length", 0.0)) for p in polylines]
+    _L_max = max((L for L in _all_L if L > 0.0), default=0.0)
+
     for pid, p in enumerate(polylines):
         kind = str(p.get("kind", "polyline")).lower().strip()
         vids_path = p.get("path_vertex_ids", [])
         segL = np.array(p.get("segment_lengths", []), float)
         L = float(p.get("total_length", 0.0))
 
-        # Total panels for this polyline (legacy scaling)
-        Np = max(8, int(2 * n_crack_elements))
+        # Total panels for this polyline -- length-aware.
+        # Np_i = NP_MAX * L_i / L_max, clipped to [MIN_PANELS_PER_POLYLINE, NP_MAX].
+        if _L_max > 0.0:
+            Np = max(MIN_PANELS_PER_POLYLINE,
+                     min(NP_MAX, int(NP_MAX * L / _L_max + 0.5)))
+        else:
+            Np = MIN_PANELS_PER_POLYLINE
 
         # Single-segment curved edges (arc/cspline) are treated as one segment of length L.
         nseg = int(len(segL)) if (len(segL) > 0) else 1
