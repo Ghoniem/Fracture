@@ -82,13 +82,21 @@ def compute_bem_brazilian_disk_field(
     save_arrays: bool = True,
     save_contours: bool = True,
     normalize_by: Optional[float] = None,
+    engine: str = "python",
 ) -> Tuple[BEMSolver2D, Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
     """
     Solve the Brazilian disk BEM problem and evaluate stresses on a grid.
 
+    engine: 'python' (default) -- pure-Python BEMSolver2D.
+            'cpp'              -- bem_cpp.BEMSolver2D (OpenMP); identical
+                                   API + math, dramatically faster (~1000x
+                                   on the per-grid-point stress evaluation
+                                   that dominates wall-clock for n_grid=120).
+    Falls back to Python with a warning if bem_cpp is unavailable.
+
     Returns
     -------
-    solver : BEMSolver2D
+    solver : BEMSolver2D-like (Python or C++ class depending on engine)
     (xs, ys, Sxx, Syy, Sxy) : xs/ys in meters; stresses in Pa
     """
     out_dir = Path(out_dir)
@@ -124,8 +132,23 @@ def compute_bem_brazilian_disk_field(
     ]
     is_traction, bc_x, bc_y = assemble_segment_bcs(mesh, bc_specs=bc_specs, default=("traction", 0.0, 0.0))
 
-    # 3) Solve
-    solver = BEMSolver2D(E=params.E, nu=params.nu, h=float(params.h), plane_strain=bool(params.plane_strain))
+    # 3) Solve  (engine='cpp' uses bem_cpp.BEMSolver2D, same API)
+    use_cpp = (str(engine).lower().strip() == "cpp")
+    if use_cpp:
+        try:
+            import bem_cpp
+            _SolverClass = bem_cpp.BEMSolver2D
+        except ImportError as _e:
+            import warnings
+            warnings.warn(f"engine='cpp' requested but bem_cpp not importable "
+                          f"({_e!r}); falling back to Python BEMSolver2D.",
+                          RuntimeWarning, stacklevel=2)
+            _SolverClass = BEMSolver2D
+            use_cpp = False
+    else:
+        _SolverClass = BEMSolver2D
+    solver = _SolverClass(E=params.E, nu=params.nu, h=float(params.h),
+                          plane_strain=bool(params.plane_strain))
     add_boundary_to_solver(solver, mesh, is_traction, bc_x, bc_y)
     solver.solve(gauss_n=int(params.gauss_n))
 
@@ -198,10 +221,16 @@ def ensure_bem_field(
     recompute: bool = False,
     show: bool = True,
     save_contours: bool = True,
+    engine: str = "python",
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     If out_dir already contains saved arrays and recompute=False, just load them.
     Otherwise compute a fresh BEM solution and overwrite arrays.
+
+    engine: 'python' (default) | 'cpp' -- forwarded to
+        compute_bem_brazilian_disk_field. The C++ backend uses
+        bem_cpp.BEMSolver2D, dramatically reducing the per-grid-point
+        stress-evaluation cost that dominates BEM wall-clock.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -219,5 +248,6 @@ def ensure_bem_field(
         save_arrays=True,
         save_contours=save_contours,
         normalize_by=None,
+        engine=engine,
     )
     return field

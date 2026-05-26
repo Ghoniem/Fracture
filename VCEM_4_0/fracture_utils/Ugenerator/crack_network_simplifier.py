@@ -133,7 +133,8 @@ class CrackNetworkSimplifier:
                 positions[:, 1].max() - positions[:, 1].min()
             )
         
-        print(f"✓ Loaded network: {self.G.number_of_nodes()} vertices, "
+        # ASCII-only so this works in Windows cp1252 consoles too.
+        print(f"[ok] Loaded network: {self.G.number_of_nodes()} vertices, "
               f"{self.G.number_of_edges()} edges")
     
     def _update_vertex_types(self):
@@ -191,7 +192,7 @@ class CrackNetworkSimplifier:
         n_merged = self._merge_close_vertices()
         stats['vertices_merged'] = n_merged
         if verbose:
-            print(f"  ✓ Merged {n_merged} vertices")
+            print(f"  [ok]Merged {n_merged} vertices")
         
         # Step 2: Remove small edges
         if verbose:
@@ -199,7 +200,7 @@ class CrackNetworkSimplifier:
         n_removed = self._remove_small_edges()
         stats['edges_removed'] = n_removed
         if verbose:
-            print(f"  ✓ Removed {n_removed} small edges")
+            print(f"  [ok]Removed {n_removed} small edges")
         
         # Step 3: Merge colinear edges at degree-2 nodes
         if self.config.merge_at_degree2:
@@ -208,7 +209,7 @@ class CrackNetworkSimplifier:
             n_merged = self._merge_colinear_edges()
             stats['edges_merged'] = n_merged
             if verbose:
-                print(f"  ✓ Merged {n_merged} edge pairs")
+                print(f"  [ok]Merged {n_merged} edge pairs")
         
         # Step 4: Remove degree-2 internal nodes
         if self.config.remove_degree2_nodes:
@@ -217,7 +218,7 @@ class CrackNetworkSimplifier:
             n_removed = self._remove_degree2_nodes()
             stats['degree2_removed'] = n_removed
             if verbose:
-                print(f"  ✓ Removed {n_removed} internal nodes")
+                print(f"  [ok]Removed {n_removed} internal nodes")
         
         # Update vertex types
         self._update_vertex_types()

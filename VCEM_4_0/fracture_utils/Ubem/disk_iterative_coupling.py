@@ -244,6 +244,7 @@ def solve_bem_with_extra_boundary_tractions(
     ty_extra: np.ndarray,
     gauss_n: Optional[int] = None,
     show: bool = False,
+    engine: str = "python",
 ):
     """
     Solve BEM disk with original external pressure arcs + added elementwise tractions.
@@ -302,7 +303,21 @@ def solve_bem_with_extra_boundary_tractions(
     bc_x = np.asarray(bc_x, float) + tx_extra
     bc_y = np.asarray(bc_y, float) + ty_extra
 
-    solver = BEMSolver2D(E=disk_params.E, nu=disk_params.nu, h=getattr(disk_params, "h", 1.0), plane_strain=True)
+    # engine='cpp' uses bem_cpp.BEMSolver2D (same API; OpenMP-parallel)
+    if str(engine).lower().strip() == "cpp":
+        try:
+            import bem_cpp
+            _SolverClass = bem_cpp.BEMSolver2D
+        except ImportError as _e:
+            import warnings
+            warnings.warn(f"engine='cpp' requested but bem_cpp not importable "
+                          f"({_e!r}); using Python BEMSolver2D.",
+                          RuntimeWarning, stacklevel=2)
+            _SolverClass = BEMSolver2D
+    else:
+        _SolverClass = BEMSolver2D
+    solver = _SolverClass(E=disk_params.E, nu=disk_params.nu,
+                          h=getattr(disk_params, "h", 1.0), plane_strain=True)
     add_boundary_to_solver(solver, mesh, is_traction, bc_x, bc_y)
     gauss_n_eff = int(getattr(disk_params, "gauss_n", 4)) if gauss_n is None else int(gauss_n)
     solver.solve(gauss_n=gauss_n_eff)
