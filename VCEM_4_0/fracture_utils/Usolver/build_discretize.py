@@ -199,6 +199,27 @@ def discretize_polylines(
         # Backward compatibility: honor explicit tip_min_panels by raising endpoint minimum
         endpoint_min_panels_eff = int(max(endpoint_min_panels, tip_min_panels))
 
+        # Reconcile the length-aware Np with the refinement-budget
+        # minimums. allocate_panels_per_segment raises if Np is below the
+        # per-segment minimum sum (e.g. on a short polyline whose
+        # length-aware Np is 11 but whose 2 refined endpoints + 2 kink-
+        # adjacent segments demand 14 panels minimum). Bump Np up to the
+        # required minimum -- the resulting per-panel length on a tiny
+        # polyline gets a bit smaller, but refinement near tips/kinks is
+        # preserved and the simulation does not abort mid-cycle.
+        _ref_set = set(refined_endpoint_segs)
+        _kink_set = set(kink_adj_segs)
+        _min_required = 0
+        for _k in range(int(nseg)):
+            _per = int(other_min_panels)
+            if _k in _ref_set:
+                _per = max(_per, int(endpoint_min_panels_eff))
+            if _k in _kink_set:
+                _per = max(_per, int(kink_min_panels))
+            _min_required += _per
+        if _min_required > Np:
+            Np = max(Np, _min_required)
+
         # Allocate panels per segment (sum to Np)
         Nseg = allocate_panels_per_segment(
             Np=int(Np),
