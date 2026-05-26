@@ -72,13 +72,14 @@ if _cpp_pkg_dir not in _sys.path:
     _sys.path.insert(0, _cpp_pkg_dir)
 
 # Try to import bem_cpp, fall back to engine='python' if missing.
+# Drop any half-baked import from a previous run so reload() can't fail
+# on a missing-submodule cache entry.
+for _stale in [m for m in list(_sys.modules) if m == 'bem_cpp' or m.startswith('bem_cpp.')]:
+    del _sys.modules[_stale]
 _CPP_AVAILABLE = False
 _bem_cpp_err = None
 try:
-    if 'bem_cpp' in _sys.modules:
-        bem_cpp = _il.reload(_sys.modules['bem_cpp'])
-    else:
-        import bem_cpp  # noqa: F401
+    import bem_cpp  # noqa: F401
     _CPP_AVAILABLE = True
 except Exception as _e:
     _bem_cpp_err = _e
@@ -145,6 +146,39 @@ else:
     if _bem_cpp_err is not None:
         print(f' Note: bem_cpp import failed: {_bem_cpp_err!r}')
         print(f'       (looked in {_cpp_pkg_dir})')
+        # Detailed diagnostic so the root cause is obvious.
+        print()
+        print(' --- diagnostic ---')
+        print(f'   sys.executable = {_sys.executable}')
+        print(f'   sys.version    = {_sys.version.split(chr(10))[0]}')
+        _pkg = _cpp_pkg_dir + '/bem_cpp'
+        import os as _os
+        if _os.path.isdir(_pkg):
+            _files = sorted(_os.listdir(_pkg))
+            print(f'   {_pkg} contents:')
+            for _f in _files:
+                print(f'     {_f}')
+            _pyd = [f for f in _files if f.endswith('.pyd') or f.endswith('.so')]
+            if _pyd:
+                # cp310-win_amd64 -> Python 3.10. Check vs running interp.
+                _v = _sys.version_info
+                _tag = f'cp{_v.major}{_v.minor}'
+                _matching = [f for f in _pyd if _tag in f]
+                if not _matching:
+                    print(f'   *** ABI MISMATCH: extension is {_pyd[0]}, '
+                          f'but running interpreter is {_tag} (Python '
+                          f'{_v.major}.{_v.minor}). ***')
+                    print('   *** This usually means Jupyter is using a '
+                          'different Python than the conda vcem_4_0 env. ***')
+                    print('   *** Pick the vcem_4_0 kernel in Jupyter '
+                          '(Kernel -> Change Kernel) or rebuild the '
+                          'extension for your running Python ***')
+                    print('   *** (cd VCEM_4_0/cpp/build && cmake --build . '
+                          '--config Release --target bem_cpp && cmake '
+                          '--install . --config Release). ***')
+        else:
+            print(f'   *** directory missing: {_pkg}')
+            print('   *** rebuild via VCEM_4_0/cpp/README.md ***')
 print('=' * 62)
 import sys as _sys2; _sys2.stdout.flush()
 """
