@@ -54,11 +54,15 @@ void compress_constraints(const Eigen::Ref<const Eigen::MatrixXd>& C,
 //
 // d may be empty (length 0) when C has 0 rows; otherwise len(d) must
 // equal C.rows(). Pass an empty 0xn C if the problem is unconstrained.
+// ridge_diag may be an empty vector (length 0) when unused. When non-empty,
+// it must have length K.cols() and is added to the diagonal of A = K^T K
+// (i.e. equivalent to numpy's `A += np.diag(np.maximum(ridge_diag, 0))`).
 Eigen::VectorXd solve_kkt_lsq_eq(
     const Eigen::Ref<const Eigen::MatrixXd>& K,
     const Eigen::Ref<const Eigen::VectorXd>& rhs,
     const Eigen::Ref<const Eigen::MatrixXd>& C,
     const Eigen::Ref<const Eigen::VectorXd>& d,
-    const KKTOptions& options = KKTOptions{});
+    const KKTOptions& options = KKTOptions{},
+    const Eigen::VectorXd& ridge_diag = Eigen::VectorXd());
 
 }}  // namespace vcem::crack

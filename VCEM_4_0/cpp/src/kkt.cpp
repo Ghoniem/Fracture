@@ -55,7 +55,8 @@ Eigen::VectorXd solve_kkt_lsq_eq(
     const Eigen::Ref<const Eigen::VectorXd>& rhs,
     const Eigen::Ref<const Eigen::MatrixXd>& C,
     const Eigen::Ref<const Eigen::VectorXd>& d,
-    const KKTOptions& opts)
+    const KKTOptions& opts,
+    const Eigen::VectorXd& ridge_diag)
 {
     const Eigen::Index n = K.cols();
     if (K.rows() != rhs.size()) {
@@ -74,6 +75,14 @@ Eigen::VectorXd solve_kkt_lsq_eq(
 
     if (opts.ridge > 0.0) {
         A.diagonal().array() += opts.ridge;
+    }
+    if (ridge_diag.size() > 0) {
+        if (ridge_diag.size() != n) {
+            throw std::invalid_argument(
+                "solve_kkt_lsq_eq: ridge_diag.size() must equal K.cols()");
+        }
+        // Match numpy: A += diag(maximum(ridge_diag, 0))
+        A.diagonal().array() += ridge_diag.array().max(0.0);
     }
 
     // Compress constraints to full row rank (avoids singular KKT).

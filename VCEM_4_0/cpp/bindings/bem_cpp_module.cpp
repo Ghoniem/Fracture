@@ -255,17 +255,19 @@ PYBIND11_MODULE(bem_cpp, m) {
            const Eigen::Ref<const Eigen::VectorXd>& d,
            double ridge,
            vcem::crack::KKTBackend backend,
-           double constraint_tol) {
+           double constraint_tol,
+           const Eigen::VectorXd& ridge_diag) {
             vcem::crack::KKTOptions opts;
             opts.backend = backend;
             opts.ridge = ridge;
             opts.constraint_tol = constraint_tol;
-            return vcem::crack::solve_kkt_lsq_eq(K, rhs, C, d, opts);
+            return vcem::crack::solve_kkt_lsq_eq(K, rhs, C, d, opts, ridge_diag);
         },
         py::arg("K"), py::arg("rhs"), py::arg("C"), py::arg("d"),
         py::arg("ridge") = 0.0,
         py::arg("backend") = vcem::crack::KKTBackend::AutoLU,
-        py::arg("constraint_tol") = 1e-12);
+        py::arg("constraint_tol") = 1e-12,
+        py::arg("ridge_diag") = Eigen::VectorXd());
 
     m.def("edge_dislocation_stress",
         [](double dx, double dy, double dBx, double dBy,
