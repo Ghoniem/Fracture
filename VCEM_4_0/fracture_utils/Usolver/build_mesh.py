@@ -26,7 +26,7 @@ def identify_refinement_segments(
     *,
     refine_junction_endpoints: bool,
     refine_kinks: bool,
-) -> Tuple[List[int], Set[int], Dict[int, str]]:
+) -> Tuple[List[int], Set[int], Dict[int, Set[str]]]:
     """
     Returns
     -------
@@ -35,13 +35,15 @@ def identify_refinement_segments(
         Typically includes 0 and/or nseg-1.
     kink_adj_segs : set[int]
         Segment indices adjacent to internal deg==2 vertices.
-    cluster_target : dict[int,str]
-        For kink-adjacent segments only: seg_index -> 'start' or 'end' indicating
-        which side of the segment should be clustered toward the kink.
+    cluster_target : dict[int, set[str]]
+        For kink-adjacent segments only: seg_index -> set containing 'start',
+        'end', or both. A segment bracketed by kinks on both sides reports
+        {'start','end'} so build_s_nodes_for_polyline can do two-sided
+        clustering toward both kinks (symmetry-preserving).
     """
     refined_endpoint_segs: List[int] = []
     kink_adj_segs: Set[int] = set()
-    cluster_target: Dict[int, str] = {}
+    cluster_target: Dict[int, Set[str]] = {}
 
     if nseg <= 0:
         return refined_endpoint_segs, kink_adj_segs, cluster_target
@@ -57,6 +59,12 @@ def identify_refinement_segments(
 
     # Kinks: internal deg==2 vertices along the polyline path.
     # For a kink at vids_path[i], segments (i-1) and (i) are adjacent.
+    # When the same segment is touched by two kinks (one at each endpoint),
+    # merge the directions into a set so build_s_nodes_for_polyline can
+    # cluster toward BOTH kinks. The previous dict[int,str] silently
+    # overwrote the first kink with the second, biasing the entire
+    # polyline panel layout toward s=Ltot and breaking mirror symmetry on
+    # multi-kink polylines.
     if refine_kinks and isinstance(vids_path, list) and len(vids_path) >= 3:
         for i in range(1, len(vids_path) - 1):
             vk = int(vids_path[i])
@@ -65,10 +73,10 @@ def identify_refinement_segments(
                 sR = i
                 if 0 <= sL < nseg:
                     kink_adj_segs.add(sL)
-                    cluster_target[sL] = "end"    # cluster toward kink
+                    cluster_target.setdefault(sL, set()).add("end")    # cluster toward kink
                 if 0 <= sR < nseg:
                     kink_adj_segs.add(sR)
-                    cluster_target[sR] = "start"  # cluster toward kink
+                    cluster_target.setdefault(sR, set()).add("start")  # cluster toward kink
 
     return refined_endpoint_segs, kink_adj_segs, cluster_target
 
@@ -120,19 +128,37 @@ def allocate_panels_per_segment(
     special = set(refined_endpoint_segs) | set(kink_adj_segs)
     others = [k for k in range(nseg) if k not in special]
 
+    # Distribute the remainder using a mirror-symmetric outside-in pattern,
+    # so that a palindromic segment list (e.g. a propagation polyline that
+    # is geometrically mirror-symmetric) gets a palindromic Nseg. The
+    # earlier "first-r-segments get +1" strategy biased every panel
+    # remainder toward low-indexed segments, which on a multi-kink polyline
+    # silently broke mirror symmetry of the BEM discretization.
+    def _distribute(targets: List[int], R_: int) -> None:
+        if not targets or R_ <= 0:
+            return
+        n = len(targets)
+        q, r = divmod(int(R_), n)
+        for k in targets:
+            Nseg[k] += int(q)
+        # Mirror-symmetric outside-in order over the (sorted) target list.
+        order: List[int] = []
+        i, j = 0, n - 1
+        while i <= j:
+            if i == j:
+                order.append(i)
+            else:
+                order.append(i)
+                order.append(j)
+            i += 1
+            j -= 1
+        for idx in order[:r]:
+            Nseg[targets[idx]] += 1
+
     if others:
-        q, r = divmod(R, len(others))
-        for k in others:
-            Nseg[k] += int(q)
-        for k in others[:r]:
-            Nseg[k] += 1
+        _distribute(sorted(others), R)
     elif special:
-        spec_list = list(sorted(special))
-        q, r = divmod(R, len(spec_list))
-        for k in spec_list:
-            Nseg[k] += int(q)
-        for k in spec_list[:r]:
-            Nseg[k] += 1
+        _distribute(sorted(special), R)
     # else: single segment and no refinement; nothing to do
 
     return [int(max(1, nk)) for nk in Nseg]
@@ -220,7 +246,7 @@ def build_s_nodes_for_polyline(
     Nseg: List[int],
     refined_endpoint_segs: List[int],
     kink_adj_segs: Set[int],
-    cluster_target: Dict[int, str],
+    cluster_target: Dict[int, Set[str]],
     tip_cluster: str,
     tip_cluster_power: float,
 ) -> np.ndarray:
@@ -234,7 +260,10 @@ def build_s_nodes_for_polyline(
     Kink clustering:
       - cluster toward kink as specified in cluster_target for those segments
 
-    Two-sided clustering occurs naturally when nseg==1 and both ends are refined.
+    Two-sided clustering occurs naturally when nseg==1 and both ends are
+    refined, OR when a single segment is bracketed by a tip on one side and
+    a kink on the other (e.g. seg0 of a kinked propagation polyline), OR
+    when a single segment is bracketed by two kinks.
     """
     segL = np.asarray(segL, float)
     nseg = int(len(segL))
@@ -250,19 +279,25 @@ def build_s_nodes_for_polyline(
         if Le <= 0.0:
             continue
 
-        # Determine clustering needs for this segment
+        # Determine clustering needs for this segment. Endpoint refinement
+        # and kink clustering are ADDITIVE -- a tip-adjacent segment whose
+        # interior side touches a kink should cluster on BOTH ends. The
+        # earlier version used cluster_target as a precedence override,
+        # which silently dropped tip clustering on every segment that also
+        # had a kink, leaving the BEM unable to resolve the SIF.
         cluster_start = False
         cluster_end = False
 
-        # Kinks can force one-sided clustering toward kink
-        if k in cluster_target:
-            cluster_start = (cluster_target[k] == "start")
-            cluster_end = (cluster_target[k] == "end")
-        else:
-            if k == 0 and (0 in refined_endpoint_segs):
-                cluster_start = True
-            if k == nseg - 1 and ((nseg - 1) in refined_endpoint_segs):
-                cluster_end = True
+        targets = cluster_target.get(k, set())
+        if "start" in targets:
+            cluster_start = True
+        if "end" in targets:
+            cluster_end = True
+
+        if k == 0 and (0 in refined_endpoint_segs):
+            cluster_start = True
+        if k == nseg - 1 and ((nseg - 1) in refined_endpoint_segs):
+            cluster_end = True
 
         xi = segment_parametric_nodes(
             Nk,

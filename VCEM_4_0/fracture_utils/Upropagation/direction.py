@@ -24,30 +24,20 @@ class MaximumHoopStressLaw:
 
         theta = 2 * atan2( KI - sqrt(KI^2 + 8*KII^2), 4*KII )
 
-    Two regularizations are applied to prevent step-to-step direction
-    flips (zigzag) when KII is dominated by numerical noise:
-
-    1. KII noise threshold (``kii_noise_ratio``, default 0.02):
-       if |KII| / (|KI| + |KII|) < threshold, the loading is treated as
-       essentially pure mode I and theta = 0 (straight propagation). At
-       a 2 % ratio this corresponds to a kink under ~1 deg, well below
-       physical meaningfulness for a BEM-recovered SIF.
-
-    2. Soft kink limit (``max_kink_deg``, default 70 deg):
-       theta is clamped to +/- max_kink_deg. Mode-I-dominant cracks
-       rarely turn more than this in one step; an unclamped result
-       usually indicates a branch-selection artifact.
+    A KII noise threshold (``kii_noise_ratio``, default 0.05) prevents
+    step-to-step direction flips (zigzag) when KII is dominated by
+    numerical noise: if |KII| / (|KI| + |KII|) < threshold, the loading
+    is treated as essentially pure mode I and theta = 0 (straight
+    propagation). At a 5 % ratio this corresponds to a kink under
+    ~3 deg, well below physical meaningfulness for a BEM-recovered SIF.
 
     Parameters
     ----------
-    kii_noise_ratio : float, default 0.02
+    kii_noise_ratio : float, default 0.05
         Suppress kink to 0 when |KII|/(|KI|+|KII|) is below this.
-    max_kink_deg : float, default 70.0
-        Hard clamp on the magnitude of the returned theta (degrees).
     """
 
-    kii_noise_ratio: float = 0.02
-    max_kink_deg: float = 70.0
+    kii_noise_ratio: float = 0.05
 
     @staticmethod
     def _wrap_pi(theta: float) -> float:
@@ -101,10 +91,4 @@ class MaximumHoopStressLaw:
             # Tie-breaker: preserve smooth/compact branch where equivalent.
             theta = th_plus if abs(th_plus) <= abs(th_minus) else th_minus
 
-        # Soft clamp so a wild branch pick can't produce e.g. a -130 deg
-        # back-fold. Sign of theta is preserved; this is a safety bound,
-        # not a refinement of the MTS criterion.
-        max_rad = float(self.max_kink_deg) * np.pi / 180.0
-        if abs(theta) > max_rad:
-            theta = max_rad if theta > 0 else -max_rad
         return theta

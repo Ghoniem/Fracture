@@ -35,7 +35,7 @@ class DCEPlotterNetworkV4:
     def plot_network_graph(
         self,
         units: str = "mm",
-        annotate: bool = True,
+        annotate: bool = False,
         *,
         show: bool = True,
         save: bool = True,

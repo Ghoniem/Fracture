@@ -34,7 +34,7 @@ from fracture_utils.Ubem.boundary_conditions import (
     add_boundary_to_solver,
 )
 from fracture_utils.Ubem.bem_plotter import plot_centerline_stresses_circle
-from fracture_utils.Ubem.bem_stress_field import circle_inside
+from fracture_utils.Ubem.bem_stress_field import circle_inside, stress_on_grid
 from fracture_utils.Ubem.bem_stress_plotter import (
     ContourOpts,
     eval_and_plot_stress_components_contours_separate,
@@ -187,22 +187,25 @@ def compute_bem_brazilian_disk_field(
         opts_xx = ContourOpts(**opts_common, title="σ_xx", symmetric=True)
         opts_yy = ContourOpts(**opts_common, title="σ_yy", symmetric=True)
         opts_xy = ContourOpts(**opts_common, title="σ_xy", symmetric=True)
-    else:
-        # still compute arrays; no figures
-        opts_xx = opts_yy = opts_xy = None
 
-    xs, ys, Sxx, Syy, Sxy, _paths = eval_and_plot_stress_components_contours_separate(
-        solver,
-        bbox=bbox,
-        out_dir=out_dir,
-        basename="brazilian_disk",
-        n=int(params.n_grid),
-        inside=inside,
-        normalize_by=None,     # keep Pa in arrays
-        opts_xx=opts_xx,
-        opts_yy=opts_yy,
-        opts_xy=opts_xy,
-    )
+        xs, ys, Sxx, Syy, Sxy, _paths = eval_and_plot_stress_components_contours_separate(
+            solver,
+            bbox=bbox,
+            out_dir=out_dir,
+            basename="brazilian_disk",
+            n=int(params.n_grid),
+            inside=inside,
+            normalize_by=None,     # keep Pa in arrays
+            opts_xx=opts_xx,
+            opts_yy=opts_yy,
+            opts_xy=opts_xy,
+        )
+    else:
+        # Eval-only: compute arrays without producing BEM-only contour PNGs.
+        xmin, xmax, ymin, ymax = bbox
+        xs = np.linspace(xmin, xmax, int(params.n_grid))
+        ys = np.linspace(ymin, ymax, int(params.n_grid))
+        Sxx, Syy, Sxy = stress_on_grid(solver, xs, ys, inside=inside)
 
     if save_arrays:
         np.save(out_dir / "xs.npy", xs)

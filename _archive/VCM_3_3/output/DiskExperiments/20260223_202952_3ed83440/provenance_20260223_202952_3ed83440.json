@@ -1,0 +1,558 @@
+{
+  "run_id": "20260223_202952_3ed83440",
+  "generated_at": "2026-02-23T20:29:55.162981",
+  "repo_root": "C:\\Users\\Owner\\Documents\\Repos\\Fracture\\VCM_3_2",
+  "notebook": "VCM_3_2/notebooks/disk_experiments.ipynb",
+  "rows": [
+    {
+      "group": "run",
+      "parameter": "COUPLING_METHOD",
+      "default": "iterative",
+      "effective": "iterative",
+      "source": "notebook"
+    },
+    {
+      "group": "run",
+      "parameter": "OUTER_CYCLES",
+      "default": 5,
+      "effective": 4,
+      "source": "notebook"
+    },
+    {
+      "group": "run",
+      "parameter": "SKIP_BEM_SOLVE",
+      "default": true,
+      "effective": true,
+      "source": "notebook"
+    },
+    {
+      "group": "network",
+      "parameter": "mm",
+      "default": 0.001,
+      "effective": 0.001,
+      "source": "notebook"
+    },
+    {
+      "group": "network",
+      "parameter": "vertices",
+      "default": "(current in source)",
+      "effective": [
+        [
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          1.0,
+          0.001,
+          0.0
+        ],
+        [
+          2.0,
+          0.002,
+          0.001
+        ],
+        [
+          3.0,
+          0.004,
+          0.002
+        ],
+        [
+          4.0,
+          0.01,
+          0.002
+        ],
+        [
+          5.0,
+          0.012,
+          -0.001
+        ],
+        [
+          6.0,
+          0.009000000000000001,
+          -0.002
+        ],
+        [
+          7.0,
+          0.007,
+          -0.004
+        ],
+        [
+          8.0,
+          0.007,
+          -0.006
+        ],
+        [
+          9.0,
+          0.008,
+          -0.008
+        ]
+      ],
+      "source": "notebook"
+    },
+    {
+      "group": "network",
+      "parameter": "connectivity",
+      "default": "(current in source)",
+      "effective": [
+        [
+          0,
+          1
+        ],
+        [
+          1,
+          2
+        ],
+        [
+          2,
+          3
+        ],
+        [
+          3,
+          4
+        ],
+        [
+          4,
+          5
+        ],
+        [
+          5,
+          6
+        ],
+        [
+          6,
+          7
+        ],
+        [
+          7,
+          8
+        ],
+        [
+          7,
+          9
+        ]
+      ],
+      "source": "notebook"
+    },
+    {
+      "group": "disk",
+      "parameter": "R",
+      "default": null,
+      "effective": 0.0127,
+      "source": "notebook/default"
+    },
+    {
+      "group": "disk",
+      "parameter": "P_total",
+      "default": null,
+      "effective": 3800.0,
+      "source": "notebook/default"
+    },
+    {
+      "group": "disk",
+      "parameter": "E",
+      "default": null,
+      "effective": 231520000000.0,
+      "source": "notebook/default"
+    },
+    {
+      "group": "disk",
+      "parameter": "nu",
+      "default": null,
+      "effective": 0.3,
+      "source": "notebook/default"
+    },
+    {
+      "group": "disk",
+      "parameter": "n_elem",
+      "default": 120,
+      "effective": 120,
+      "source": "notebook/default"
+    },
+    {
+      "group": "disk",
+      "parameter": "gauss_n",
+      "default": 4,
+      "effective": 6,
+      "source": "notebook/default"
+    },
+    {
+      "group": "disk",
+      "parameter": "plane_strain",
+      "default": true,
+      "effective": true,
+      "source": "notebook/default"
+    },
+    {
+      "group": "disk",
+      "parameter": "arc_half_angle_deg",
+      "default": 15.0,
+      "effective": 10.0,
+      "source": "notebook/default"
+    },
+    {
+      "group": "disk",
+      "parameter": "h",
+      "default": 0.00635,
+      "effective": 0.00635,
+      "source": "notebook/default"
+    },
+    {
+      "group": "disk",
+      "parameter": "n_grid",
+      "default": 120,
+      "effective": 120,
+      "source": "notebook/default"
+    },
+    {
+      "group": "disk",
+      "parameter": "pad_frac",
+      "default": 0.03,
+      "effective": 0.03,
+      "source": "notebook/default"
+    },
+    {
+      "group": "bem_field",
+      "parameter": "recompute",
+      "default": false,
+      "effective": false,
+      "source": "derived"
+    },
+    {
+      "group": "bem_field",
+      "parameter": "show",
+      "default": true,
+      "effective": true,
+      "source": "notebook"
+    },
+    {
+      "group": "bem_field",
+      "parameter": "save_contours",
+      "default": true,
+      "effective": true,
+      "source": "notebook"
+    },
+    {
+      "group": "plot",
+      "parameter": "cmap",
+      "default": "jet",
+      "effective": "jet",
+      "source": "notebook/default"
+    },
+    {
+      "group": "plot",
+      "parameter": "n_bands",
+      "default": 40,
+      "effective": 40,
+      "source": "notebook/default"
+    },
+    {
+      "group": "plot",
+      "parameter": "vmax_factor",
+      "default": 2.0,
+      "effective": 2.0,
+      "source": "notebook/default"
+    },
+    {
+      "group": "plot",
+      "parameter": "dpi",
+      "default": 300,
+      "effective": 300,
+      "source": "notebook/default"
+    },
+    {
+      "group": "plot",
+      "parameter": "match_limits_to_crack",
+      "default": true,
+      "effective": true,
+      "source": "notebook/default"
+    },
+    {
+      "group": "plot",
+      "parameter": "robust",
+      "default": true,
+      "effective": true,
+      "source": "notebook/default"
+    },
+    {
+      "group": "plot",
+      "parameter": "robust_pct",
+      "default": 97.0,
+      "effective": 97.0,
+      "source": "notebook/default"
+    },
+    {
+      "group": "plot",
+      "parameter": "symmetric",
+      "default": true,
+      "effective": true,
+      "source": "notebook/default"
+    },
+    {
+      "group": "plot",
+      "parameter": "n_levels",
+      "default": 30,
+      "effective": 60,
+      "source": "notebook/default"
+    },
+    {
+      "group": "plot",
+      "parameter": "n_line_levels",
+      "default": 20,
+      "effective": 15,
+      "source": "notebook/default"
+    },
+    {
+      "group": "plot",
+      "parameter": "fixed_vlim_mpa",
+      "default": null,
+      "effective": null,
+      "source": "notebook/default"
+    },
+    {
+      "group": "plot",
+      "parameter": "augmented_correction_stride",
+      "default": 4,
+      "effective": 4,
+      "source": "notebook/default"
+    },
+    {
+      "group": "plot_hook",
+      "parameter": "show_initial",
+      "default": true,
+      "effective": true,
+      "source": "notebook/default"
+    },
+    {
+      "group": "plot_hook",
+      "parameter": "show_cycles",
+      "default": false,
+      "effective": true,
+      "source": "notebook/default"
+    },
+    {
+      "group": "plot_hook",
+      "parameter": "show_final",
+      "default": true,
+      "effective": true,
+      "source": "notebook/default"
+    },
+    {
+      "group": "plot_hook",
+      "parameter": "only_post_simplify",
+      "default": true,
+      "effective": true,
+      "source": "notebook/default"
+    },
+    {
+      "group": "solver_kwargs",
+      "parameter": "ne_half",
+      "default": 60,
+      "effective": 60,
+      "source": "notebook/default"
+    },
+    {
+      "group": "solver_kwargs",
+      "parameter": "representation",
+      "default": "cheb_quad",
+      "effective": "cheb_quad",
+      "source": "notebook/default"
+    },
+    {
+      "group": "solver_kwargs",
+      "parameter": "node_distribution",
+      "default": "tip_dense",
+      "effective": "tip_dense",
+      "source": "notebook/default"
+    },
+    {
+      "group": "solver_kwargs",
+      "parameter": "solver_option",
+      "default": "parametrized_crack",
+      "effective": "parametrized_crack",
+      "source": "notebook/default"
+    },
+    {
+      "group": "solver_kwargs",
+      "parameter": "parametrization",
+      "default": "polyline",
+      "effective": "polyline",
+      "source": "notebook/default"
+    },
+    {
+      "group": "solver_kwargs",
+      "parameter": "nq_col",
+      "default": 9,
+      "effective": 9,
+      "source": "notebook/default"
+    },
+    {
+      "group": "solver_kwargs",
+      "parameter": "nq_stress",
+      "default": 12,
+      "effective": 12,
+      "source": "notebook/default"
+    },
+    {
+      "group": "solver_kwargs",
+      "parameter": "crack_mode",
+      "default": "half",
+      "effective": "half",
+      "source": "notebook/default"
+    },
+    {
+      "group": "solver_kwargs",
+      "parameter": "junction_model",
+      "default": "core",
+      "effective": "core",
+      "source": "notebook/default"
+    },
+    {
+      "group": "growth",
+      "parameter": "material_E",
+      "default": 200000000000.0,
+      "effective": 200000000000.0,
+      "source": "notebook/default"
+    },
+    {
+      "group": "growth",
+      "parameter": "material_nu",
+      "default": 0.3,
+      "effective": 0.3,
+      "source": "notebook/default"
+    },
+    {
+      "group": "growth",
+      "parameter": "plane_stress",
+      "default": false,
+      "effective": false,
+      "source": "notebook/default"
+    },
+    {
+      "group": "growth",
+      "parameter": "f0",
+      "default": 0.05,
+      "effective": 0.03,
+      "source": "notebook/default"
+    },
+    {
+      "group": "growth",
+      "parameter": "f_fixed",
+      "default": 0.05,
+      "effective": 0.03,
+      "source": "notebook/default"
+    },
+    {
+      "group": "growth",
+      "parameter": "step_mode",
+      "default": "fixed_step",
+      "effective": "fixed_step",
+      "source": "notebook/default"
+    },
+    {
+      "group": "growth",
+      "parameter": "simultaneous_tip_growth",
+      "default": true,
+      "effective": true,
+      "source": "notebook/default"
+    },
+    {
+      "group": "growth",
+      "parameter": "Kc_demo",
+      "default": 1000000.0,
+      "effective": 100000.0,
+      "source": "notebook/default"
+    },
+    {
+      "group": "growth",
+      "parameter": "rmax_frac",
+      "default": 0.25,
+      "effective": 0.25,
+      "source": "notebook/default"
+    },
+    {
+      "group": "growth",
+      "parameter": "min_pts",
+      "default": 8,
+      "effective": 8,
+      "source": "notebook/default"
+    },
+    {
+      "group": "growth",
+      "parameter": "max_cycles",
+      "default": 10,
+      "effective": 8,
+      "source": "notebook/default"
+    },
+    {
+      "group": "growth",
+      "parameter": "vertex_high",
+      "default": 18,
+      "effective": 16,
+      "source": "notebook/default"
+    },
+    {
+      "group": "growth",
+      "parameter": "L_limit_mm",
+      "default": 20.0,
+      "effective": 20.0,
+      "source": "notebook/default"
+    },
+    {
+      "group": "growth",
+      "parameter": "simplification_config",
+      "default": null,
+      "effective": null,
+      "source": "notebook/default"
+    },
+    {
+      "group": "augmented",
+      "parameter": "d_mode",
+      "default": "correction_zero",
+      "effective": "correction_zero",
+      "source": "notebook/default"
+    },
+    {
+      "group": "augmented",
+      "parameter": "payload_gauss_n",
+      "default": 4,
+      "effective": 4,
+      "source": "notebook/default"
+    },
+    {
+      "group": "augmented",
+      "parameter": "augmented_ridge_q",
+      "default": 0.0001,
+      "effective": 0.0001,
+      "source": "notebook/default"
+    },
+    {
+      "group": "augmented",
+      "parameter": "augmented_ridge_y",
+      "default": 1e-10,
+      "effective": 1e-08,
+      "source": "notebook/default"
+    },
+    {
+      "group": "augmented",
+      "parameter": "augmented_keep_bem_applied",
+      "default": true,
+      "effective": true,
+      "source": "notebook/default"
+    },
+    {
+      "group": "iterative_update",
+      "parameter": "show",
+      "default": false,
+      "effective": false,
+      "source": "notebook/default"
+    },
+    {
+      "group": "iterative_update",
+      "parameter": "gauss_n",
+      "default": "disk.gauss_n",
+      "effective": null,
+      "source": "notebook/default"
+    }
+  ]
+}

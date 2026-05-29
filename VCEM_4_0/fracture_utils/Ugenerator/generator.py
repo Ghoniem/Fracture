@@ -1011,6 +1011,137 @@ class CrackNetworkGenerator:
         
         return None
     
+    def detect_and_snap_vertices_to_segments(self, tol: float,
+                                              verbose: bool = True) -> int:
+        """Generalisation of segment-segment intersection detection: where
+        ``detect_and_split_intersections`` finds two segments that cross,
+        this method finds a *vertex* that nearly lies on a non-incident
+        *segment*.
+
+        For every vertex V and every edge (a, b) with a != V and b != V,
+        compute the closest point P on the segment [a, b] (clamped to the
+        segment, not the infinite line). If ||V - P|| < tol:
+
+          * If P lies within ``tol`` of endpoint a (resp. b), merge V into
+            a (resp. b): V's other incident edges are reattached to the
+            surviving endpoint and V is deleted. This is the
+            vertex-vertex coincidence case.
+          * Otherwise, move V to P and split (a, b) at V, inserting edges
+            (a, V) and (V, b). V becomes a junction (its degree grows by
+            +2 over the interior case, plus whatever degree it already
+            had).
+
+        Candidates are processed in ascending distance order and each
+        action is re-validated against the live graph before being
+        applied, so the result is independent of vertex insertion order.
+
+        Args:
+            tol: snap distance threshold [m]. Same units as node positions.
+            verbose: print per-snap diagnostics.
+
+        Returns:
+            Number of snap actions applied (interior splits + endpoint merges).
+        """
+        if tol <= 0.0:
+            return 0
+        tol2 = float(tol) * float(tol)
+
+        positions = nx.get_node_attributes(self.G, 'pos')
+        nodes = list(self.G.nodes())
+        edges_list = list(self.G.edges())
+
+        candidates = []  # (d2, V, (a, b))
+        for V in nodes:
+            pV = np.asarray(positions[V], dtype=float)
+            for (a, b) in edges_list:
+                if a == V or b == V:
+                    continue
+                pa = np.asarray(positions[a], dtype=float)
+                pb = np.asarray(positions[b], dtype=float)
+                ab = pb - pa
+                L2 = float(ab.dot(ab))
+                if L2 == 0.0:
+                    continue
+                t = float((pV - pa).dot(ab) / L2)
+                t_cl = 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
+                P = pa + t_cl * ab
+                dP = P - pV
+                d2 = float(dP.dot(dP))
+                if d2 < tol2:
+                    candidates.append((d2, V, (a, b)))
+
+        if not candidates:
+            if verbose:
+                print(f"detect_and_snap_vertices_to_segments: no vertices within {tol*1e3:.4g} mm of a non-incident segment")
+            return 0
+
+        candidates.sort(key=lambda rec: (rec[0], rec[1], rec[2]))
+
+        snapped = 0
+        for _d2_init, V, (a, b) in candidates:
+            # Re-validate against the live graph: vertex still present,
+            # edge still present, and still within tol after any earlier
+            # snap may have moved V or replaced (a, b).
+            if V not in self.G.nodes():
+                continue
+            if not self.G.has_edge(a, b):
+                continue
+
+            pV = np.asarray(self.G.nodes[V]['pos'], dtype=float)
+            pa = np.asarray(self.G.nodes[a]['pos'], dtype=float)
+            pb = np.asarray(self.G.nodes[b]['pos'], dtype=float)
+            ab = pb - pa
+            L2 = float(ab.dot(ab))
+            if L2 == 0.0:
+                continue
+            t = float((pV - pa).dot(ab) / L2)
+            t_cl = 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
+            P = pa + t_cl * ab
+            dP = P - pV
+            d2 = float(dP.dot(dP))
+            if d2 >= tol2:
+                continue
+
+            d_to_a2 = float((P - pa).dot(P - pa))
+            d_to_b2 = float((P - pb).dot(P - pb))
+
+            if d_to_a2 < tol2:
+                # Endpoint merge: V -> a (transfer V's other neighbours, drop V)
+                for nbr in list(self.G.neighbors(V)):
+                    if nbr != a and not self.G.has_edge(a, nbr):
+                        pa_now = np.asarray(self.G.nodes[a]['pos'], dtype=float)
+                        pn = np.asarray(self.G.nodes[nbr]['pos'], dtype=float)
+                        self.G.add_edge(a, nbr, length=float(np.linalg.norm(pn - pa_now)))
+                self.G.remove_node(V)
+                snapped += 1
+                if verbose:
+                    print(f"  Snap-merge: vertex {V} -> endpoint {a}")
+            elif d_to_b2 < tol2:
+                for nbr in list(self.G.neighbors(V)):
+                    if nbr != b and not self.G.has_edge(b, nbr):
+                        pb_now = np.asarray(self.G.nodes[b]['pos'], dtype=float)
+                        pn = np.asarray(self.G.nodes[nbr]['pos'], dtype=float)
+                        self.G.add_edge(b, nbr, length=float(np.linalg.norm(pn - pb_now)))
+                self.G.remove_node(V)
+                snapped += 1
+                if verbose:
+                    print(f"  Snap-merge: vertex {V} -> endpoint {b}")
+            else:
+                # Interior split: move V to P, replace (a, b) with (a, V) + (V, b).
+                self.G.nodes[V]['pos'] = (float(P[0]), float(P[1]))
+                self.G.remove_edge(a, b)
+                self.G.add_edge(a, V, length=float(np.linalg.norm(P - pa)))
+                self.G.add_edge(V, b, length=float(np.linalg.norm(pb - P)))
+                snapped += 1
+                if verbose:
+                    print(f"  Snap-split: vertex {V} placed on edge ({a},{b}) at ({P[0]*1e3:.3f}, {P[1]*1e3:.3f}) mm -> junction")
+
+        if snapped > 0:
+            self._update_vertex_types()
+        if verbose:
+            print(f"detect_and_snap_vertices_to_segments: {snapped} snap action(s)")
+        return snapped
+
     def detect_and_split_intersections(self, verbose: bool = True,
                                         mode: str = 'single_pass',
                                         engine: str = 'python') -> int:

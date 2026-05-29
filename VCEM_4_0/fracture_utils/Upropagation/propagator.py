@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, List, Optional, Tuple
+from typing import Any, Iterable, List, Optional, Set, Tuple
 import numpy as np
 
 from .tip_state import TipState
@@ -41,6 +41,9 @@ class CrackPropagator:
         direction_law: Any,
         remesh_policy: Any = None,
         updater: Any = None,
+        max_kink_deg: float = 0.0,
+        initial_vertex_ids: Optional[Iterable[int]] = None,
+        snapped_vertex_ids: Optional[Iterable[int]] = None,
     ):
         self.cfg = cfg
         self.evaluator = evaluator
@@ -48,6 +51,29 @@ class CrackPropagator:
         self.direction_law = direction_law
         self.remesh_policy = remesh_policy
         self.updater = updater
+
+        # Soft segment-to-segment kink clamp. theta from MTS is measured
+        # relative to the local tip tangent (= direction of the immediately
+        # preceding segment), so clamping |theta| <= max_kink_deg is a
+        # direct clamp on the segment-to-segment direction change.
+        # max_kink_deg <= 0 disables the clamp.
+        # Tips whose v_tip is in initial_vertex_ids are on their first
+        # emission (no previous *new* segment to compare to) and bypass
+        # the clamp; subsequent emissions always clamp.
+        self.max_kink_deg = float(max_kink_deg)
+        self._initial_vertex_ids: Set[int] = (
+            set(int(v) for v in initial_vertex_ids) if initial_vertex_ids is not None else set()
+        )
+
+        # Boundary-snapped tips: vids of deg-1 tips that have crossed the
+        # disk boundary at any point in the run. Their positions are
+        # projected radially onto r=R and growth_force is forced to 0
+        # for every subsequent increment (permanent arrest at the
+        # boundary). Caller threads this set across outer cycles so the
+        # arrest persists when a fresh propagator is built each cycle.
+        self._snapped_vertex_ids: Set[int] = (
+            set(int(v) for v in snapped_vertex_ids) if snapped_vertex_ids is not None else set()
+        )
 
         # Step controller is only used for adaptive_step (it's a no-op factory output otherwise).
         # The factory in step_control.make_step_controller picks Fixed/Adaptive based on cfg.step_mode.
@@ -57,6 +83,71 @@ class CrackPropagator:
             self.step_controller = make_step_controller(cfg)
         except Exception:
             self.step_controller = None
+
+    def _disk_radius(self) -> float:
+        return float(getattr(self.cfg, "disk_radius_m", 0.0) or 0.0)
+
+    def _tip_outside_disk(self, tip: Any) -> bool:
+        """True if the tip lies strictly outside the disk r > R.
+
+        Brazilian-disk geometry: disk centered at origin, radius
+        cfg.disk_radius_m. Returns False (no-op) when disk_radius_m <= 0.
+        """
+        R = self._disk_radius()
+        if R <= 0.0:
+            return False
+        x = np.asarray(getattr(tip, "x_tip"), float).reshape(2,)
+        return float(np.hypot(x[0], x[1])) > R
+
+    def _snap_tip_to_boundary(self, network: Any, tip: Any) -> Any:
+        """Project the tip's vertex radially onto the disk boundary r=R.
+
+        Modifies a copy of the network: the snapped vertex now lies exactly
+        at r=R along the same radial direction as the original (outside)
+        tip. The new network is returned; the caller swaps it in. Disk
+        is centered at origin (matches the BEM solver convention).
+        """
+        from fracture_utils.Usolver.network import CrackNetworkV4, VertexV4
+
+        R = self._disk_radius()
+        v_tip = int(getattr(tip, "v_tip"))
+        x = np.asarray(getattr(tip, "x_tip"), float).reshape(2,)
+        r = float(np.hypot(x[0], x[1]))
+        if r <= 0.0 or R <= 0.0:
+            return network
+        scale = R / r
+        x_snap = (float(x[0]) * scale, float(x[1]) * scale)
+
+        V_new = []
+        for v in network.vertices:
+            if int(v.id) == v_tip:
+                V_new.append(VertexV4(v.id, x_snap[0], x_snap[1],
+                                      list(v.edges), role=v.role))
+            else:
+                V_new.append(v)
+        return CrackNetworkV4(vertices=V_new, edges=list(network.edges),
+                              Nv_max=network.Nv_max)
+
+    @property
+    def snapped_vertex_ids(self) -> Set[int]:
+        return set(self._snapped_vertex_ids)
+
+    def _clamp_segment_kink(self, tip: Any, theta: float) -> float:
+        """Clamp theta to +/- max_kink_deg, except on a tip's first emission.
+
+        First emission := tip.v_tip is in self._initial_vertex_ids. After
+        a tip emits a new edge, the new tip vertex has a fresh id (not in
+        the initial set), and subsequent calls clamp.
+        """
+        if self.max_kink_deg <= 0.0:
+            return float(theta)
+        v_tip = int(getattr(tip, "v_tip", -1))
+        if v_tip in self._initial_vertex_ids:
+            return float(theta)
+        max_rad = float(self.max_kink_deg) * np.pi / 180.0
+        if abs(float(theta)) > max_rad:
+            return float(max_rad if theta > 0.0 else -max_rad)
+        return float(theta)
 
     def _get_updater(self):
         if self.updater is not None:
@@ -70,13 +161,42 @@ class CrackPropagator:
     def _simultaneous(self) -> bool:
         return bool(getattr(self.cfg, "simultaneous_tip_growth", True))
 
+    def _fixed_step_delta_a(self, Ltot: float) -> float:
+        # Disk-radius step (preferred for the Brazilian-disk pipeline):
+        # Δa = f_disk_radius * R, constant in absolute terms regardless of
+        # how the polyline grows. Falls back to legacy Δa = f_fixed * L_total
+        # when disk_radius_m is not set.
+        disk_R = float(getattr(self.cfg, "disk_radius_m", 0.0) or 0.0)
+        if disk_R > 0.0:
+            f = float(getattr(self.cfg, "f_disk_radius", 0.05))
+            return float(f * disk_R)
+        f = float(getattr(self.cfg, "f_fixed", getattr(self.cfg, "f0", 0.10)))
+        return float(f * Ltot)
+
     def grow_one_increment(self, network: Any) -> PropagationResult:
         from .network_ops import get_netops
 
+        # ---- Pre-pass: snap any deg-1 tip that has crossed outside the
+        # disk to r=R, record its vid in the persistent snapped set, and
+        # re-extract tips so the solve and evaluations use the snapped
+        # geometry. Tips whose vid is already in the snapped set are also
+        # treated as arrested (growth_force pinned to 0).
         netops = get_netops()
         deg = netops.degree_map(network)
         polylines = netops.extract_open_polylines(network)
         tips = netops.extract_deg1_tips(network, polylines, deg) or []
+
+        if self._disk_radius() > 0.0 and len(tips) > 0:
+            snapped_now = False
+            for tip in tips:
+                if self._tip_outside_disk(tip):
+                    network = self._snap_tip_to_boundary(network, tip)
+                    self._snapped_vertex_ids.add(int(getattr(tip, "v_tip", -1)))
+                    snapped_now = True
+            if snapped_now:
+                deg = netops.degree_map(network)
+                polylines = netops.extract_open_polylines(network)
+                tips = netops.extract_deg1_tips(network, polylines, deg) or []
 
         if len(tips) == 0:
             return PropagationResult(network_new=network, reports=[])
@@ -84,41 +204,68 @@ class CrackPropagator:
         updater = self._get_updater()
         reports: List[TipPropagationReport] = []
 
-        # ---- Solve baseline once
+        # ---- Solve baseline once (on the snapped network if any tips were
+        # arrested above)
         base_sol = self.evaluator.solve(network)
 
-        # ---- Phase A: evaluate all tips and decide growth based on the SAME baseline solution
-        decisions: List[Tuple[Any, float, float, float, float, float, float, float, str]] = []
-        # tuple: (tip, delta_a, theta, keff0, KI0, KII0, Kc, Ltot, reason)
-
         step_mode = self._step_mode()
+        delta_a_tol = float(getattr(self.cfg, "delta_a_min", 0.0))
 
+        # ---- Phase A.1: evaluate every deg-1 tip against the SAME baseline.
+        # Defer Δa: we need K_eff for every tip before scaling.
+        evals: List[dict] = []
+        Ltot_max = 0.0
         for tip in tips:
-            which = str(getattr(getattr(tip, "tip_id", tip), "which", getattr(tip, "which", "unknown")))
-            vid = int(getattr(tip, "v_tip", getattr(tip, "vid", -1)))
             Ltot = float(getattr(tip, "total_length", 0.0))
+            Ltot_max = max(Ltot_max, Ltot)
+            vid = int(getattr(tip, "v_tip", -1))
+
+            # Arrested tips: previously snapped to the disk boundary. They
+            # are permanent gf=0 — reported as "snapped_at_boundary" so
+            # post-processing can tell them apart from below_toughness /
+            # below_tolerance.
+            if vid in self._snapped_vertex_ids:
+                evals.append(dict(
+                    tip=tip, Ltot=Ltot,
+                    KI=0.0, KII=0.0, keff=0.0, theta=0.0, Kc=0.0,
+                    growth_force=0.0, reason="snapped_at_boundary",
+                ))
+                continue
 
             tev0 = self.evaluator.eval_tip(base_sol, tip)
             KI0 = float(tev0.KI); KII0 = float(tev0.KII)
             keff0 = float(tev0.keff); theta0 = float(tev0.theta)
 
-            # toughness
             try:
                 Kc = float(self.toughness.Kc(float(tip.x_tip[0]), float(tip.x_tip[1])))
             except Exception:
                 Kc = 0.0
 
-            if keff0 <= Kc:
-                decisions.append((tip, 0.0, theta0, keff0, KI0, KII0, Kc, Ltot, "below_toughness"))
-                continue
+            growth_force = max(0.0, keff0 - Kc)
+            evals.append(dict(
+                tip=tip, Ltot=Ltot,
+                KI=KI0, KII=KII0, keff=keff0, theta=theta0, Kc=Kc,
+                growth_force=growth_force,
+                reason=("" if growth_force > 0.0 else "below_toughness"),
+            ))
 
-            theta = theta0
-            delta_a = 0.0
-            reason = ""
+        # ---- Phase A.2: build per-tip decisions.
+        # tuple: (tip, delta_a, theta, keff0, KI0, KII0, Kc, Ltot, reason)
+        decisions: List[Tuple[Any, float, float, float, float, float, float, float, str]] = []
 
-            if step_mode == "adaptive_step" and self.step_controller is not None:
-                # build_candidate returns (new_network, new_tip) so the adaptive controller
-                # can evaluate SIFs at the *new* tip vertex rather than the now-interior old one.
+        if step_mode == "adaptive_step" and self.step_controller is not None:
+            # Legacy: each tip resolves its own step independently via the
+            # adaptive step controller. No global K-scaling here.
+            for e in evals:
+                tip = e["tip"]; Ltot = e["Ltot"]
+                theta0 = e["theta"]; keff0 = e["keff"]
+                KI0 = e["KI"]; KII0 = e["KII"]; Kc = e["Kc"]
+                reason = e["reason"]
+
+                if e["growth_force"] <= 0.0:
+                    decisions.append((tip, 0.0, theta0, keff0, KI0, KII0, Kc, Ltot, reason))
+                    continue
+
                 def build_candidate(net_base, _tip, _theta, _delta_a):
                     new_net = updater.extend_tip(
                         net_base, _tip, theta=float(_theta), delta_a=float(_delta_a)
@@ -143,6 +290,8 @@ class CrackPropagator:
                     )
                     return new_net, new_tip
 
+                theta = theta0
+                delta_a = 0.0
                 try:
                     decision = self.step_controller.choose_step(
                         evaluator=self.evaluator,
@@ -159,32 +308,55 @@ class CrackPropagator:
                     accepted = bool(getattr(decision, "accepted", True))
                     if not accepted:
                         reason = f"adaptive_not_accepted:{getattr(decision,'reason','')}"
-                        # fall back to fixed
-                        f = float(getattr(self.cfg, "f_fixed", getattr(self.cfg, "f0", 0.10)))
-                        delta_a = float(f * Ltot)
+                        delta_a = self._fixed_step_delta_a(Ltot)
                         theta = theta0
-                except Exception as e:
-                    reason = f"adaptive_failed:{e}"
-                    # fall back to fixed
-                    f = float(getattr(self.cfg, "f_fixed", getattr(self.cfg, "f0", 0.10)))
-                    delta_a = float(f * Ltot)
+                except Exception as ex:
+                    reason = f"adaptive_failed:{ex}"
+                    delta_a = self._fixed_step_delta_a(Ltot)
                     theta = theta0
 
-            else:
-                # fixed step
-                f = float(getattr(self.cfg, "f_fixed", getattr(self.cfg, "f0", 0.10)))
-                delta_a = float(f * Ltot)
+                theta = self._clamp_segment_kink(tip, theta)
 
-            # minimum delta_a
-            delta_a_min = float(getattr(self.cfg, "delta_a_min", 0.0))
-            if delta_a < delta_a_min:
-                delta_a = delta_a_min
+                # delta_a_min now acts as an *elimination* threshold: kinks
+                # below tolerance are dropped (not bumped up).
+                if delta_a < delta_a_tol:
+                    decisions.append((tip, 0.0, theta, keff0, KI0, KII0, Kc, Ltot,
+                                      reason or "below_tolerance"))
+                    continue
 
-            if delta_a <= 0.0:
-                if not reason:
-                    reason = "zero_step"
-                decisions.append((tip, 0.0, theta, keff0, KI0, KII0, Kc, Ltot, reason))
-            else:
+                decisions.append((tip, delta_a, theta, keff0, KI0, KII0, Kc, Ltot, reason))
+        else:
+            # New global K-scaled fixed-step logic:
+            #   1. Across all deg-1 tips, growth_force_i = max(K_eff_i - Kc_i, 0).
+            #   2. Reference step ds_ref = f_disk_radius * R (constant in absolute
+            #      terms) with legacy L_total fallback when disk_radius_m is unset.
+            #   3. Each above-threshold tip grows by ds_ref * growth_force_i / max_gf.
+            #      The dominant tip (max K_eff) gets exactly ds_ref; weaker tips
+            #      get a Paris-law-style scaled fraction.
+            #   4. Tips with the scaled Δa below cfg.delta_a_min are eliminated
+            #      (skipped entirely rather than bumped up).
+            max_gf = max((float(e["growth_force"]) for e in evals), default=0.0)
+            ds_ref = self._fixed_step_delta_a(Ltot_max)
+
+            for e in evals:
+                tip = e["tip"]; Ltot = e["Ltot"]
+                theta = self._clamp_segment_kink(tip, float(e["theta"]))
+                keff0 = e["keff"]; KI0 = e["KI"]; KII0 = e["KII"]; Kc = e["Kc"]
+                reason = e["reason"]
+
+                if e["growth_force"] <= 0.0 or max_gf <= 0.0:
+                    decisions.append((tip, 0.0, theta, keff0, KI0, KII0, Kc, Ltot,
+                                      reason or "below_toughness"))
+                    continue
+
+                rel = float(e["growth_force"]) / float(max_gf)
+                delta_a = float(ds_ref) * rel
+
+                if delta_a < delta_a_tol:
+                    decisions.append((tip, 0.0, theta, keff0, KI0, KII0, Kc, Ltot,
+                                      "below_tolerance"))
+                    continue
+
                 decisions.append((tip, delta_a, theta, keff0, KI0, KII0, Kc, Ltot, reason))
 
         # If not simultaneous growth: choose a single best tip (max keff - Kc) among those with delta_a>0

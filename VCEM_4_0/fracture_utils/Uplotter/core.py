@@ -23,7 +23,7 @@ class DCEPlotterV4:
     def plot_network_graph(
         self,
         units: str = "mm",
-        annotate: bool = True,
+        annotate: bool = False,
         *,
         font_size: int = 16,
         label_offset_frac: float = 0.07,

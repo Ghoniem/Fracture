@@ -199,6 +199,17 @@ class CandidateEvaluator:
 
         KI = float(KI); KII = float(KII)
         keff = float(np.hypot(KI, KII))
-        theta = float(self.direction_law.theta(KI, KII) if self.direction_law is not None else 0.0)
+
+        # At the v_start tip the SIF extraction frame is left-handed
+        # (ex outward, but ey kept along the polyline-direction normal so
+        # KI stays positive at both tips). MTS assumes a right-handed
+        # (ex outward, ey = R90_CCW(ex)) frame, so we flip KII here to
+        # convert the start-tip SIFs to that convention before computing
+        # the kink angle. With this flip the returned theta is the kink
+        # CCW from the outward tangent at both tips, and extend_tip can
+        # apply it uniformly (no separate d -> -d at the start).
+        which = str(getattr(getattr(tip, "tip_id", None), "which", "")).lower()
+        KII_for_theta = -KII if which == "start" else KII
+        theta = float(self.direction_law.theta(KI, KII_for_theta) if self.direction_law is not None else 0.0)
 
         return TipEval(KI=KI, KII=KII, keff=keff, theta=theta, meta=meta)

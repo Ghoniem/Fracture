@@ -264,10 +264,7 @@ def solve_bem_with_extra_boundary_tractions(
     from fracture_utils.Ubem.boundary_conditions import (
         build_boundary, BCSpec, assemble_segment_bcs, add_boundary_to_solver
     )
-    from fracture_utils.Ubem.bem_stress_field import circle_inside
-    from fracture_utils.Ubem.bem_stress_plotter import (
-        ContourOpts, eval_and_plot_stress_components_contours_separate
-    )
+    from fracture_utils.Ubem.bem_stress_field import circle_inside, stress_on_grid
 
     bem_dir = Path(bem_dir)
     bem_dir.mkdir(parents=True, exist_ok=True)
@@ -322,40 +319,16 @@ def solve_bem_with_extra_boundary_tractions(
     gauss_n_eff = int(getattr(disk_params, "gauss_n", 4)) if gauss_n is None else int(gauss_n)
     solver.solve(gauss_n=gauss_n_eff)
 
-    # Save updated stress grid (overwrite standard arrays)
+    # Save updated stress grid (overwrite standard arrays). BEM-only
+    # contour plots are intentionally suppressed -- the only stress
+    # figure rendered for this run is the BEM+Crack total field in
+    # disk_crack_plotting.plot_total_field.
     R = float(disk_params.R)
-    bbox = (-R, R, -R, R)
     inside = circle_inside(R, center=(0.0, 0.0), pad=0.03 * R)
-
-    opts_common = dict(
-        dpi=300,
-        show=bool(show),
-        robust=True,
-        robust_pct=97.0,
-        n_levels=30,
-        n_line_levels=20,
-        x_scale=1e3, y_scale=1e3,
-        x_label="x [mm]", y_label="y [mm]",
-        value_scale=1e-6,
-        cbar_label="Stress [MPa]",
-        cmap="jet",
-    )
-    opts_xx = ContourOpts(**opts_common, title="σ_xx", symmetric=True)
-    opts_yy = ContourOpts(**opts_common, title="σ_yy", symmetric=True)
-    opts_xy = ContourOpts(**opts_common, title="σ_xy", symmetric=True)
-
-    xs, ys, Sxx, Syy, Sxy, _paths = eval_and_plot_stress_components_contours_separate(
-        solver,
-        bbox=bbox,
-        out_dir=bem_dir,
-        basename="brazilian_disk_iter",
-        n=int(getattr(disk_params, "n_grid", 120)),
-        inside=inside,
-        normalize_by=None,
-        opts_xx=opts_xx,
-        opts_yy=opts_yy,
-        opts_xy=opts_xy,
-    )
+    n = int(getattr(disk_params, "n_grid", 120))
+    xs = np.linspace(-R, R, n)
+    ys = np.linspace(-R, R, n)
+    Sxx, Syy, Sxy = stress_on_grid(solver, xs, ys, inside=inside)
 
     np.save(bem_dir / "xs.npy", xs)
     np.save(bem_dir / "ys.npy", ys)

@@ -42,8 +42,21 @@ class PropagationConfig:
         If True, apply all accepted tip updates to the same base geometry.
         If False, apply updates sequentially (ordering-dependent).
     delta_a_min
-        Minimum physical increment (meters). If > 0, enforce Δa >= delta_a_min.
-        Useful to prevent near-zero "wiggle" steps when running fixed-step demos.
+        Minimum physical increment (meters). If > 0, tips whose scaled Δa
+        falls below this tolerance are *eliminated* (no kink added that
+        step), rather than bumped up. Useful to suppress near-zero
+        "wiggle" kinks on tips whose K_eff is just barely above Kc when
+        the dominant tip drives the global ds_ref.
+
+    Disk-radius step (preferred for the Brazilian-disk pipeline)
+    -----------------------------------------------------------
+    disk_radius_m
+        If > 0, every growth increment uses Δa_ref = f_disk_radius * disk_radius_m
+        instead of f_fixed * L_total. This makes the absolute step size
+        invariant under network length (no meander from a growing L_ref).
+        When set, step_mode / f_fixed / f0 are ignored by NetworkGrowthRunner.
+    f_disk_radius
+        Step size as a fraction of the disk radius (default 0.05).
     """
 
     # --- Step strategy
@@ -65,3 +78,7 @@ class PropagationConfig:
     # --- Global
     simultaneous_tip_growth: bool = True
     delta_a_min: float = 0.0
+
+    # --- Disk-radius step (overrides L_total scaling when disk_radius_m > 0)
+    f_disk_radius: float = 0.05
+    disk_radius_m: float = 0.0

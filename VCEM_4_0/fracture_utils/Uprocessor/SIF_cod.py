@@ -640,6 +640,7 @@ def euclid_tip_fit_from_edge(
     x, COD, CSD, extra = res.reconstruct_cod_csd_panel_midpoints(
         edge_index=int(edge_index),
         enforce_global_tip_zero=True,
+        tip_xy=tip_xy,
     )
     extra = dict(extra) if isinstance(extra, dict) else {}
 

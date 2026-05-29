@@ -380,7 +380,7 @@ class DCEPlotterDeformedV4:
         show: bool = True,
         save: bool = True,
         debug_counts: bool = True,
-        label_topology: bool = True,
+        label_topology: bool = False,
         font_size: int = 16,
         label_offset_frac: float = 0.07,
     ):

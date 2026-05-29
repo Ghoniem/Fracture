@@ -12,7 +12,7 @@ Features:
 from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, Optional, Any, Tuple
+from typing import Callable, Dict, Iterable, Optional, Any, Tuple
 import numpy as np
 
 
@@ -27,6 +27,15 @@ class CrackGrowthParams:
 
     solver_kwargs: Optional[Dict] = None
 
+    # Disk-radius step size: Δa_ref = f_disk_radius * disk_radius_m.
+    # Constant in absolute terms regardless of network length -- this is the
+    # preferred knob for the Brazilian-disk pipeline. When disk_radius_m
+    # is set (the Excel loader injects cfg.disk.R automatically), f0 /
+    # f_fixed / step_mode below are bypassed by NetworkGrowthRunner.
+    f_disk_radius: float = 0.05
+
+    # Legacy L_total-fraction step knobs -- kept for non-disk pipelines.
+    # Ignored when disk_radius_m > 0.
     f0: float = 0.05
     f_fixed: float = 0.05
     step_mode: str = "fixed_step"
@@ -43,10 +52,26 @@ class CrackGrowthParams:
     enable_inner_cycle_plot_save: bool = True
     deformed_network_scale: float = 50.0
 
+    # Soft segment-to-segment kink clamp. theta from MTS is measured
+    # relative to the previous segment, so |theta| <= max_kink_deg clamps
+    # the segment-to-segment direction change. The clamp is bypassed on
+    # each tip's first emission (the very first new edge added at that
+    # tip) so the initial crack can find its preferred direction; every
+    # subsequent emission is clamped. <= 0 disables.
+    max_kink_deg: float = 20.0
+
+    # Deprecated alongside simplify_each_step. Values are read but ignored.
     simplification_config: Optional[Dict] = None
     intersection_detect_mode: str = "single_pass"
     intersection_verbose: bool = False
-    simplify_each_step: bool = True
+    simp_max_angle_deg: float = 3.0
+    simp_min_edge_mm: float = 0.2
+    simp_max_merged_edge_mm: float = 5.0
+    simp_merge_tolerance_m: float = 1e-6
+    # Deprecated: per-polyline segment-merge simplifier was removed when
+    # cubic-spline parametrization was rolled back. Field kept for workbook
+    # back-compat; value is ignored by the runner.
+    simplify_each_step: bool = False
 
     # Optional inner-cycle post-processing metrics
     enable_inner_cycle_metrics_save: bool = True
@@ -66,6 +91,15 @@ class CrackGrowthParams:
     # Optional callback to compute bounded-disk compliance for each inner cycle:
     # fn(network=..., outer_cycle=..., inner_step=..., global_step=..., out_dir=...) -> float
     compliance_evaluator: Optional[Callable[..., float]] = None
+    # Simplification pass at the very start of the run and at the start of
+    # each outer cycle. (1) merges near-aligned segments at deg-2 nodes
+    # (controlled by simp_max_angle_deg / simp_max_merged_edge_mm /
+    # simp_merge_tolerance_m); (2) re-detects segment-segment intersections
+    # and reclassifies vertex degrees via update_network_with_intersections.
+    # Inner-step intersection enforcement is unchanged. Set False to keep
+    # the initial / outer-cycle network exactly as grown.
+    simplify_at_outer_cycle_start: bool = True
+
     # Kept for backward compatibility; tip-outside stop is no longer used.
     check_tip_outside_disk: bool = False
     tip_outside_tolerance_m: float = 0.0
@@ -76,11 +110,18 @@ class CrackGrowthParams:
     alpha_rel_change_ref_floor: float = 1e-12
     stop_on_all_keff_below_kc: bool = False
 
+    # Graceful stop when every deg-1 tip in the propagation result has
+    # growth_force == 0 (either snapped at the disk boundary, below the
+    # toughness threshold, or eliminated below the delta_a tolerance). The
+    # runner sets res.stopped_reason = "all_growth_force_zero" so the
+    # outer-coupling driver can break its own loop.
+    stop_on_all_growth_force_zero: bool = True
+
 
 # ============================================================
 # Intersection update (safe + local imports)
 # ============================================================
-def update_network_with_intersections(net, detect_mode="single_pass", verbose=False):
+def update_network_with_intersections(net, detect_mode="single_pass", verbose=False, snap_tol_m: float = 0.0):
     import numpy as _np
     import networkx as _nx
     from preamble import CrackNetworkV4 as _CrackNetworkV4
@@ -111,6 +152,16 @@ def update_network_with_intersections(net, detect_mode="single_pass", verbose=Fa
         gen.G.add_edge(int(a), int(b), length=L)
 
     gen._update_vertex_types()
+    # Vertex-to-segment snap: generalisation of the segment-segment
+    # intersection split. A vertex within snap_tol_m of any non-incident
+    # segment is projected onto the closest point of that segment and the
+    # segment is split there, so the vertex becomes a junction. When the
+    # projection foot lies at (or within snap_tol_m of) a segment endpoint
+    # this degenerates to a vertex-vertex merge.
+    if float(snap_tol_m) > 0.0:
+        gen.detect_and_snap_vertices_to_segments(
+            tol=float(snap_tol_m), verbose=verbose,
+        )
     gen.detect_and_split_intersections(verbose=verbose, mode=detect_mode)
 
     Vg, Cg, _ = gen.to_arrays()
@@ -126,6 +177,87 @@ def update_network_with_intersections(net, detect_mode="single_pass", verbose=Fa
 
 
 # ============================================================
+# Outer-cycle simplification (merge aligned + intersect)
+# ============================================================
+def simplify_and_intersect(
+    net,
+    *,
+    max_angle_deg: float,
+    max_merged_edge_m: float,
+    merge_vertex_tol_m: float,
+    snap_tol_m: float = 0.0,
+    detect_mode: str = "single_pass",
+    verbose: bool = False,
+):
+    """Apply outer-cycle simplification: merge near-aligned segments at deg-2
+    nodes, then run the snap-and-intersect pass so any vertex within
+    ``snap_tol_m`` of a non-incident segment is projected onto that
+    segment (forming a new junction), and any segment-segment crossings
+    are split as usual.
+
+    Vertex IDs are preserved across the merge step (no renumbering), so
+    callers tracking initial-vertex ids do not lose track of which tips
+    pre-existed. Snap/intersection splits may still add new vertex ids for
+    new interior nodes -- those are degree>=2 by construction.
+    """
+    import numpy as _np
+    from preamble import CrackNetworkV4 as _CrackNetworkV4
+    from fracture_utils.Ugenerator.crack_network_simplifier import (
+        CrackNetworkSimplifier, SimplificationConfig,
+    )
+
+    if len(getattr(net, "edges", [])) == 0:
+        return net
+
+    V = _np.array([[int(v.id), float(v.x), float(v.y)] for v in net.vertices], float)
+    C = _np.array([[int(e.v0), int(e.v1)] for e in net.edges], int)
+
+    # Only the colinear-merge step is needed here. Vertex-vertex merge is
+    # left at the safety-floor tol (the vertex-to-segment snap performed
+    # downstream by update_network_with_intersections subsumes it at the
+    # user-facing simp_min_edge_mm scale). Small-edge removal is off
+    # (min_edge_length=0 makes the `length < min_len` test always false)
+    # and the blanket deg-2 collapse is off -- a deg-2 node is collapsed
+    # only when its two incident segments are *nearly aligned*.
+    simp_cfg = SimplificationConfig(
+        max_angle_deviation=float(max_angle_deg),
+        min_edge_length=0.0,
+        merge_vertex_tolerance=float(merge_vertex_tol_m),
+        max_merged_edge_length=float(max_merged_edge_m),
+        merge_at_degree2=True,
+        remove_degree2_nodes=False,
+        preserve_tips=True,
+        preserve_junctions=True,
+    )
+    simp = CrackNetworkSimplifier(simp_cfg)
+    simp.load_from_arrays(V, C)
+    simp.simplify(verbose=bool(verbose))
+
+    # Convert back PRESERVING ids (do NOT call simp.to_arrays(), which
+    # renumbers all nodes sequentially).
+    nodes = list(simp.G.nodes())
+    V2 = _np.array(
+        [[int(nid), float(simp.G.nodes[nid]["pos"][0]), float(simp.G.nodes[nid]["pos"][1])]
+         for nid in nodes],
+        float,
+    )
+    if simp.G.number_of_edges() > 0:
+        C2 = _np.array([[int(u), int(v)] for u, v in simp.G.edges()], int)
+    else:
+        C2 = _np.zeros((0, 2), int)
+
+    net_merged = _CrackNetworkV4.from_vertices_connectivity(
+        vertices=V2, connectivity=C2, Nv_max=4, validate=True,
+    )
+    return update_network_with_intersections(
+        net_merged,
+        detect_mode=detect_mode,
+        verbose=verbose,
+        snap_tol_m=float(snap_tol_m),
+    )
+
+
+# ============================================================
 # Runner
 # ============================================================
 def run_network_growth_uncoupled(
@@ -136,6 +268,9 @@ def run_network_growth_uncoupled(
     connectivity: np.ndarray,
     params: CrackGrowthParams,
     plot_hook: Optional[Callable] = None,
+    original_initial_vertex_ids: Optional[Iterable[int]] = None,
+    snapped_vertex_ids: Optional[Iterable[int]] = None,
+    plot_initial: bool = True,
 ):
 
     from preamble import (
@@ -146,7 +281,6 @@ def run_network_growth_uncoupled(
         CandidateEvaluator, CrackPropagator,
         _call,
     )
-    from fracture_utils.Ugenerator.crack_network_simplifier import CrackNetworkSimplifier, SimplificationConfig
     from fracture_utils.Upropagation.network_ops import get_netops
     from fracture_utils.Ubem.crack_energetics import topology_metrics_for_network
 
@@ -161,12 +295,52 @@ def run_network_growth_uncoupled(
         validate=True,
     )
 
+    # Initial simplification + intersection reclassification, applied once
+    # before any growth so the initial solve and tip-history reflect the
+    # cleaned network. Per-outer-cycle pass below repeats this between
+    # cycles. _init_vids is captured AFTER this so the propagator's
+    # first-emission set matches the simplified network.
+    if bool(params.simplify_at_outer_cycle_start):
+        print("[simplify] initial pass: merge aligned + snap-to-segment + intersect")
+        net = simplify_and_intersect(
+            net,
+            max_angle_deg=float(params.simp_max_angle_deg),
+            max_merged_edge_m=float(params.simp_max_merged_edge_mm) * mm,
+            merge_vertex_tol_m=float(params.simp_merge_tolerance_m),
+            snap_tol_m=float(params.simp_min_edge_mm) * mm,
+            detect_mode=params.intersection_detect_mode,
+            verbose=bool(params.intersection_verbose),
+        )
+
     # Spatial applied stress from BEM grid
     xs = np.load(Path(bem_dir)/"xs.npy")
     ys = np.load(Path(bem_dir)/"ys.npy")
     Sxx = np.nan_to_num(np.load(Path(bem_dir)/"Sxx.npy"),nan=0.0)
     Syy = np.nan_to_num(np.load(Path(bem_dir)/"Syy.npy"),nan=0.0)
     Sxy = np.nan_to_num(np.load(Path(bem_dir)/"Sxy.npy"),nan=0.0)
+
+    # Defensive shape alignment. RegularGridInterpolator((ys,xs), Z) requires
+    # Z.shape == (ys.size, xs.size). Stale arrays in bem_dir (e.g. from a
+    # previous run with a different n_grid, or saved in the opposite axis
+    # order) trip this check otherwise.
+    def _align_stress(S, Ny, Nx, name):
+        S = np.asarray(S, float)
+        if S.shape == (Ny, Nx):
+            return S
+        if S.shape == (Nx, Ny):
+            return S.T
+        raise ValueError(
+            f"BEM stress array {name}.npy has shape {S.shape}, which is "
+            f"inconsistent with the saved grid (ys.size={Ny}, xs.size={Nx}). "
+            f"This usually means stale arrays in bem_dir={bem_dir!s} from a "
+            f"prior run with a different n_grid. Set skip_bem_solve=False "
+            f"in the workbook (or delete xs.npy/ys.npy/Sxx.npy/Syy.npy/Sxy.npy "
+            f"in that dir) to refresh."
+        )
+    Ny, Nx = int(ys.size), int(xs.size)
+    Sxx = _align_stress(Sxx, Ny, Nx, "Sxx")
+    Syy = _align_stress(Syy, Ny, Nx, "Syy")
+    Sxy = _align_stress(Sxy, Ny, Nx, "Sxy")
 
     from scipy.interpolate import RegularGridInterpolator
     Ixx = RegularGridInterpolator((ys,xs),Sxx,bounds_error=False,fill_value=0.0)
@@ -213,9 +387,14 @@ def run_network_growth_uncoupled(
         applied = AppliedStress(sigma_func=sigma_func)
     material = Material(E=params.material_E,nu=params.material_nu,plane_stress=params.plane_stress)
 
-    cfg = PropagationConfig(f0=params.f0,f_fixed=params.f_fixed,
-                            step_mode=params.step_mode,
-                            simultaneous_tip_growth=params.simultaneous_tip_growth)
+    cfg = PropagationConfig(
+        f0=params.f0,
+        f_fixed=params.f_fixed,
+        step_mode=params.step_mode,
+        simultaneous_tip_growth=params.simultaneous_tip_growth,
+        f_disk_radius=float(params.f_disk_radius),
+        disk_radius_m=float(params.disk_radius_m) if params.disk_radius_m is not None else 0.0,
+    )
 
     Kc_eff = float(params.Kc_demo if Kc_from_kwargs is None else Kc_from_kwargs)
     tough = ConstantToughness(Kc_eff)
@@ -226,8 +405,21 @@ def run_network_growth_uncoupled(
                                    direction_law=dir_law,
                                    enable_n_crack_elements_escalation=False)
 
+    # First-emission set: vertex ids that pre-existed this growth run.
+    # Tips on these ids bypass the max-kink clamp (first emission); any
+    # tip on a fresh id (added by extend_tip during this run, or any
+    # earlier run if the caller threaded its original ids through) is
+    # clamped to +/- params.max_kink_deg.
+    if original_initial_vertex_ids is None:
+        _init_vids = set(int(v.id) for v in net.vertices)
+    else:
+        _init_vids = set(int(v) for v in original_initial_vertex_ids)
+
     prop = CrackPropagator(cfg=cfg,evaluator=evaluator,
-                           toughness=tough,direction_law=dir_law)
+                           toughness=tough,direction_law=dir_law,
+                           max_kink_deg=float(params.max_kink_deg),
+                           initial_vertex_ids=_init_vids,
+                           snapped_vertex_ids=snapped_vertex_ids)
     netops = get_netops()
     tip_history = []
     inner_cycle_rows = []
@@ -537,20 +729,6 @@ def run_network_growth_uncoupled(
                 total_length_m=total_length_m,
             )
 
-    simp_cfg_defaults = dict(
-        max_angle_deviation=3.0,
-        min_edge_length=0.2 * mm,
-        remove_degree2_nodes=False,
-        merge_at_degree2=True,
-        merge_vertex_tolerance=1e-6,
-        max_merged_edge_length=5 * mm,
-        preserve_tips=True,
-        preserve_junctions=True,
-    )
-    if isinstance(params.simplification_config, dict):
-        simp_cfg_defaults.update(params.simplification_config)
-    simp_cfg = SimplificationConfig(**simp_cfg_defaults)
-
     def solve_only(network,step_dir,save_inner_outputs=True):
         print(f"[solve] start: {step_dir.name} (Nv={len(network.vertices)}, Ne={len(network.edges)})")
         calc=DCENetworkStaticV4(material,network,applied)
@@ -597,15 +775,36 @@ def run_network_growth_uncoupled(
 
     try:
         # INITIAL
+        # The initial state of every outer-coupling cycle after the first
+        # is identical to the final state of the previous cycle, so the
+        # caller can pass plot_initial=False to suppress the redundant
+        # per-step plots (DCEPlotterV4 outputs + plot_hook). The solve
+        # still runs so we can record the tip-history snapshot.
         step_dir=out_dir/"cycle_00_initial"
         step_dir.mkdir(parents=True,exist_ok=True)
-        res=solve_only(net,step_dir)
-        if plot_hook: plot_hook("initial",res,step_dir)
+        res=solve_only(net,step_dir,save_inner_outputs=bool(plot_initial))
+        if plot_initial and plot_hook: plot_hook("initial",res,step_dir)
         _record_tip_snapshot(net, res, phase="initial", outer_cycle=0, inner_step=0, global_step=global_step)
 
         for cyc in range(1,params.max_cycles+1):
             last_outer_cycle = int(cyc)
             inner_step = 0
+
+            # Outer-cycle simplification: merge near-aligned segments at
+            # deg-2 nodes, then re-detect intersections so any new
+            # crossings split edges and vertex degrees are reclassified
+            # before the next growth round begins.
+            if bool(params.simplify_at_outer_cycle_start):
+                print(f"[simplify] outer cycle {cyc}: merge aligned + snap-to-segment + intersect")
+                net = simplify_and_intersect(
+                    net,
+                    max_angle_deg=float(params.simp_max_angle_deg),
+                    max_merged_edge_m=float(params.simp_max_merged_edge_mm) * mm,
+                    merge_vertex_tol_m=float(params.simp_merge_tolerance_m),
+                    snap_tol_m=float(params.simp_min_edge_mm) * mm,
+                    detect_mode=params.intersection_detect_mode,
+                    verbose=bool(params.intersection_verbose),
+                )
 
             # Growth loop
             while True:
@@ -622,21 +821,18 @@ def run_network_growth_uncoupled(
                 net=result.network_new
                 grew=sum(1 for r in result.reports if bool(getattr(r,"grew",False)))
                 global_step+=1
-                # Enforce intersections + prune small segments after each inner step
+                # Enforce intersections after each inner step. Segment-merge
+                # simplification is disabled here — raw grown segments are kept
+                # so we can study the as-grown crack path. The snap-to-segment
+                # pass also runs (vertex within simp_min_edge_mm of a non-
+                # incident segment becomes a junction on that segment) since
+                # it is just a generalisation of intersection detection.
                 net=update_network_with_intersections(
                     net,
                     detect_mode=params.intersection_detect_mode,
                     verbose=params.intersection_verbose,
+                    snap_tol_m=float(params.simp_min_edge_mm) * mm,
                 )
-                simplifier=CrackNetworkSimplifier(config=simp_cfg)
-                V=np.array([[int(v.id),v.x,v.y] for v in net.vertices],float)
-                C=np.array([[int(e.v0),int(e.v1)] for e in net.edges],int)
-                simplifier.load_from_arrays(V,C)
-                simplifier.simplify(verbose=False)
-                V2,C2=simplifier.to_arrays()
-
-                net=CrackNetworkV4.from_vertices_connectivity(
-                    vertices=V2,connectivity=C2,Nv_max=4,validate=True)
 
                 need_inner_metrics = bool(params.enable_inner_cycle_metrics_save)
                 if need_inner_metrics:
@@ -664,6 +860,25 @@ def run_network_growth_uncoupled(
                         terminate_tag = "all_keff_below_kc"
                         break
 
+                # All-tip growth_force == 0 stop: nobody is driving growth
+                # this step (every tip is snapped at the boundary, below
+                # Kc, or eliminated below the delta_a tolerance). Trigger
+                # the same graceful-stop path so the outer driver can
+                # break its loop too.
+                if bool(params.stop_on_all_growth_force_zero) and grew == 0 and len(result.reports) > 0:
+                    n_snapped_now = sum(
+                        1 for r in result.reports
+                        if str(getattr(r, "reason", "")) == "snapped_at_boundary"
+                    )
+                    print(
+                        "[stop] all-tip growth_force=0 "
+                        f"(tips={len(result.reports)}, snapped={n_snapped_now}) "
+                        f"at outer={cyc}, inner={inner_step}, global_step={global_step}."
+                    )
+                    terminate_run = True
+                    terminate_tag = "all_growth_force_zero"
+                    break
+
                 reached_inner_cap = (
                     params.max_inner_cycles_per_outer is not None
                     and int(params.max_inner_cycles_per_outer) > 0
@@ -689,38 +904,11 @@ def run_network_growth_uncoupled(
                 _record_tip_snapshot(net, res, phase=f"terminated_{tag}", outer_cycle=cyc, inner_step=inner_step, global_step=global_step)
                 break
 
-            # Pre-simplify (or post-step) visualization
-            step_dir=out_dir/f"cycle_{cyc:02d}_pre_simplify"
+            step_dir=out_dir/f"cycle_{cyc:02d}"
             step_dir.mkdir(parents=True,exist_ok=True)
             res=solve_only(net,step_dir,save_inner_outputs=bool(params.enable_inner_cycle_plot_save))
-            if plot_hook: plot_hook(f"cycle_{cyc:02d}_pre_simplify",res,step_dir)
-            _record_tip_snapshot(net, res, phase="outer_pre_simplify", outer_cycle=cyc, inner_step=inner_step, global_step=global_step)
-
-            if not params.simplify_each_step:
-                # Intersection BEFORE simplify
-                net=update_network_with_intersections(
-                    net,
-                    detect_mode=params.intersection_detect_mode,
-                    verbose=params.intersection_verbose,
-                )
-
-                # Simplify
-                simplifier=CrackNetworkSimplifier(config=simp_cfg)
-                V=np.array([[int(v.id),v.x,v.y] for v in net.vertices],float)
-                C=np.array([[int(e.v0),int(e.v1)] for e in net.edges],int)
-                simplifier.load_from_arrays(V,C)
-                simplifier.simplify(verbose=False)
-                V2,C2=simplifier.to_arrays()
-
-                net=CrackNetworkV4.from_vertices_connectivity(
-                    vertices=V2,connectivity=C2,Nv_max=4,validate=True)
-
-            # Post-simplify (or per-step-simplified) solve
-            step_dir=out_dir/f"cycle_{cyc:02d}_post_simplify"
-            step_dir.mkdir(parents=True,exist_ok=True)
-            res=solve_only(net,step_dir,save_inner_outputs=bool(params.enable_inner_cycle_plot_save))
-            if plot_hook: plot_hook(f"cycle_{cyc:02d}_post_simplify",res,step_dir)
-            _record_tip_snapshot(net, res, phase="outer_post_simplify", outer_cycle=cyc, inner_step=inner_step, global_step=global_step)
+            if plot_hook: plot_hook(f"cycle_{cyc:02d}",res,step_dir)
+            _record_tip_snapshot(net, res, phase="outer", outer_cycle=cyc, inner_step=inner_step, global_step=global_step)
 
         if plot_hook: plot_hook("final",res,step_dir)
         _record_tip_snapshot(net, res, phase="final", outer_cycle=last_outer_cycle, inner_step=0, global_step=global_step)
@@ -734,6 +922,9 @@ def run_network_growth_uncoupled(
             setattr(res, "inner_cycle_metrics", metrics)
         if res is not None:
             setattr(res, "tip_history", tip_history)
+            setattr(res, "snapped_vertex_ids", set(prop.snapped_vertex_ids))
+            setattr(res, "stopped_reason",
+                    str(terminate_tag) if terminate_run else "")
 
     if res is None:
         raise RuntimeError("No solver result was produced during network growth run.")

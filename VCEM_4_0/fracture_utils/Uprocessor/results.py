@@ -295,11 +295,13 @@ class DCEResultsNetworkV4:
         self,
         edge_index: int,
         enforce_global_tip_zero: bool = True,
+        tip_xy=None,
     ):
         info = self._extract_polyline_meta_for_edge(edge_index)
         pid = info["pid"]; solp = info["solp"]
         Ltot = info["Ltot"]; s0 = info["s0"]; Le = info["Le"]
         edge = info["edge"]; dir_sign = info["dir_sign"]
+        v_start = info["v_start"]; v_end = info["v_end"]
         a_edge = 0.5 * Le
 
         bI  = np.asarray(solp.get("bI"), float)
@@ -379,47 +381,89 @@ class DCEResultsNetworkV4:
         p1 = np.array([float(v1_obj.x), float(v1_obj.y)], dtype=float)
 
         # ------------------------------------------------------------
-        # Local frame (ex, ey) used to project jump vectors J -> (CSD, COD).
+        # Local frame (ex, ey) for projecting jump vectors J -> (CSD, COD).
         #
-        # For straight segments, use the chord direction. For ARC edges,
-        # use the *tip tangent* at the evaluated tip (the segment end in the
-        # polyline direction), because Cotterell–Rice and the COD-fit SIF
-        # extraction interpret (K_I, K_II) in the crack-tip local frame.
+        # The two basis vectors play asymmetric roles in the SIF convention:
         #
-        # ARC encoding in this repo:
-        #   edge_kinds=["arc"], edge_ctrl_vids=[(ctrl_vid,)] where ctrl_vid is the CIRCLE CENTER.
-        # ------------------------------------------------------------
-        # ------------------------------------------------------------
-        # Local frame (ex, ey) for projecting jump vectors J -> (CSD, COD)
+        #   ex (used for CSD = J . ex) must point OUTWARD from the tip we are
+        #   extracting at. KII at a tip is meaningful only in that tip's own
+        #   outward frame; flipping ex flips CSD/KII, which for mirror-shear
+        #   loading produces opposite-sign KII at the two tips of a crack --
+        #   exactly the symmetry MTS needs.
         #
-        # IMPORTANT: For parametrized_crack+polyline, the most reliable tangents are the
-        # per-panel tangents provided by the solver (t_mid / t_col). Using network chord
-        # directions (or missing arc metadata) can freeze ex=[1,0] and make KI appear flat vs alpha.
+        #   ey (used for COD = J . ey) must stay aligned with the polyline-
+        #   direction normal (= R90 CCW of the polyline tangent), the SAME
+        #   choice at both tips of a single edge. The BEM defines the jump J
+        #   with +ey as the "+ side", so COD computed against a globally-
+        #   consistent ey makes opening = positive at both tips → KI > 0
+        #   under tension at both tips (the convention MTS expects).
         #
-        # We therefore define ex from the *tip-neighborhood* tangent of this edge's panel midpoints.
+        # If we instead just set ey = R90(ex_outward), ey would also flip at
+        # the v_start tip and KI would come out with reversed sign there,
+        # which leaves MTS misinterpreting opening as closure at that tip.
+        #
+        # Panels are ordered along the polyline direction (v_start -> v_end).
+        # t_edge[i] points in that polyline direction. Therefore:
+        #   tip at v_end   (polyline-end side):   ex = +t_edge[-1]  (outward)
+        #   tip at v_start (polyline-start side): ex = -t_edge[0]   (outward)
+        #
+        # Without a tip_xy hint we cannot tell which end is the tip; we fall
+        # back to t_edge[-1] (the historical behavior). That fallback is fine
+        # only for callers operating at the v_end side of the edge; callers
+        # extracting SIFs at a tip should pass tip_xy.
         # ------------------------------------------------------------
         ex = None
+        ex_poly = None       # polyline-direction tangent at the tip side (for ey)
+        t_edge = None
         try:
-            # t_use has shape (Np,2) and m selects panels on this edge
             t_edge = np.asarray(t_use[m], float) if 't_use' in locals() and t_use is not None else None
-            if t_edge is not None and t_edge.size >= 2:
-                ex = np.asarray(t_edge[-1], float).reshape(2,)
-                # ensure unit length
-                nrm = float(np.hypot(ex[0], ex[1]))
-                if nrm > 0:
-                    ex = ex / nrm
         except Exception:
-            ex = None
+            t_edge = None
+
+        if t_edge is not None and t_edge.size >= 2:
+            if tip_xy is not None:
+                tip_arr = np.asarray(tip_xy, float).reshape(2,)
+                v_start_obj = self.calc.network.V(v_start)
+                v_end_obj = self.calc.network.V(v_end)
+                xy_start = np.array([float(v_start_obj.x), float(v_start_obj.y)], dtype=float)
+                xy_end = np.array([float(v_end_obj.x), float(v_end_obj.y)], dtype=float)
+                d_start = float(np.hypot(*(tip_arr - xy_start)))
+                d_end = float(np.hypot(*(tip_arr - xy_end)))
+                if d_start < d_end:
+                    ex_poly = np.asarray(t_edge[0], float).reshape(2,)
+                    ex = -ex_poly                                    # outward = -polyline-dir
+                else:
+                    ex_poly = np.asarray(t_edge[-1], float).reshape(2,)
+                    ex = ex_poly.copy()                              # outward = +polyline-dir
+            else:
+                ex_poly = np.asarray(t_edge[-1], float).reshape(2,)
+                ex = ex_poly.copy()
+            nrm = float(np.hypot(ex[0], ex[1]))
+            if nrm > 0:
+                ex = ex / nrm
+                ex_poly = ex_poly / nrm
+            else:
+                ex = None
+                ex_poly = None
 
         if ex is None:
             t = p1 - p0
             L = float(np.linalg.norm(t))
             if L <= 0:
-                ex = np.array([1.0, 0.0], dtype=float)
+                ex_poly = np.array([1.0, 0.0], dtype=float)
+                ex = ex_poly.copy()
             else:
-                ex = t / L
+                ex_poly = t / L
+                ex = ex_poly.copy()
+            if tip_xy is not None:
+                tip_arr = np.asarray(tip_xy, float).reshape(2,)
+                xy_mid_chord = 0.5 * (p0 + p1)
+                if float(np.dot(ex_poly, tip_arr - xy_mid_chord)) < 0.0:
+                    ex = -ex_poly
 
-        ey = np.array([-ex[1], ex[0]], dtype=float)
+        # ey from polyline-direction tangent so opening keeps a consistent
+        # sign across both tips. ex (for CSD) is the per-tip outward direction.
+        ey = np.array([-ex_poly[1], ex_poly[0]], dtype=float)
 
         CSD_mid = J_mid_e @ ex
         COD_mid = J_mid_e @ ey

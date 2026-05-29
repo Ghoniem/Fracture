@@ -48,6 +48,7 @@ def build_polylines_half_branches(
 
     used_edges: set[int] = set()
 
+    # Start polylines at every "special" vertex (deg != 2).
     start_verts = sorted([int(v) for v, d in deg.items() if int(d) != 2])
     for v0 in start_verts:
         inc_edges = v2e.get(int(v0), [])
