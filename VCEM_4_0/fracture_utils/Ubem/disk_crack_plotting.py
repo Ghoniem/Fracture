@@ -286,7 +286,7 @@ def plot_total_field(bem_dir, res, out_dir, tag, params: PlotParams, show=True):
         dpi=params.dpi,
     )
 
-    plotter.plot_stress_components_global(
+    figs = plotter.plot_stress_components_global(
         opts=opts,
         components=("sxx", "syy", "sxy"),
         grid=(xs, ys),
@@ -295,6 +295,14 @@ def plot_total_field(bem_dir, res, out_dir, tag, params: PlotParams, show=True):
         show=False,
         save=False,
     )
+    # plot_stress_components_global builds 3 matplotlib figures even when
+    # save=False/show=False (we only want the saved npy arrays here).
+    # Closing them is mandatory: with enable_per_cycle_total_contour_save
+    # this runs on every inner cycle, and the orphaned figures pile up
+    # in pyplot's global manager until the kernel is OOM-killed.
+    if isinstance(figs, dict):
+        for _f in figs.values():
+            plt.close(_f)
 
     Sxx_cr = np.load(out_dir / "crack_tmp_sxx.npy")
     Syy_cr = np.load(out_dir / "crack_tmp_syy.npy")

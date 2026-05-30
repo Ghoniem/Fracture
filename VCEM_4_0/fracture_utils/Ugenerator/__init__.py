@@ -24,6 +24,7 @@ __version__ = "1.1.0"
 from .generator import CrackNetworkGenerator  # noqa: F401
 from .geometry import GeometryUtils, polyline_arc_network  # noqa: F401
 from .analysis import NetworkAnalyzer  # noqa: F401
+from .random_cracks import random_straight_cracks  # noqa: F401
 from .boundary import (  # noqa: F401
     Boundary,
     BoundarySegment,
@@ -72,6 +73,7 @@ __all__ = [
     "GeometryUtils",
     "polyline_arc_network",
     "NetworkAnalyzer",
+    "random_straight_cracks",
     "Boundary",
     "BoundarySegment",
     "LinearSegment",

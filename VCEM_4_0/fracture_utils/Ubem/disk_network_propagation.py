@@ -50,6 +50,11 @@ class CrackGrowthParams:
     vertex_high: int = 18
     L_limit_mm: float = 20.0
     enable_inner_cycle_plot_save: bool = True
+    # When True, also save brazilian_disk_{sxx,syy,sxy}_contour.png in each
+    # cycle directory (total stress field = BEM baseline + crack contribution).
+    # Renders the per-cycle frames used by tools/make_run_videos.py to build
+    # the contour evolution videos.
+    enable_per_cycle_total_contour_save: bool = True
     deformed_network_scale: float = 50.0
 
     # Soft segment-to-segment kink clamp. theta from MTS is measured
@@ -271,6 +276,7 @@ def run_network_growth_uncoupled(
     original_initial_vertex_ids: Optional[Iterable[int]] = None,
     snapped_vertex_ids: Optional[Iterable[int]] = None,
     plot_initial: bool = True,
+    plot_params: Optional[Any] = None,
 ):
 
     from preamble import (
@@ -746,7 +752,27 @@ def run_network_growth_uncoupled(
                 "plot_deformed_network",
                 scale=float(getattr(params, "deformed_network_scale", 50.0)),
                 trim_core_junction_faces=True,
+                disk_radius=(float(params.disk_radius_m)
+                             if params.disk_radius_m is not None else None),
             )
+
+            # Per-cycle total stress contours (BEM baseline + crack contribution).
+            # Renamed from plot_total_field's natural output so make_run_videos.py
+            # picks them up under the same name in every cycle directory.
+            if bool(getattr(params, "enable_per_cycle_total_contour_save", False)) and plot_params is not None:
+                try:
+                    from fracture_utils.Ubem.disk_crack_plotting import plot_total_field
+                    tag = step_dir.name
+                    plot_total_field(bem_dir, res, out_dir=step_dir, tag=tag, params=plot_params, show=False)
+                    for comp in ("sxx", "syy", "sxy"):
+                        src = step_dir / f"total_{comp}_{tag}.png"
+                        dst = step_dir / f"brazilian_disk_{comp}_contour.png"
+                        if src.exists():
+                            if dst.exists():
+                                dst.unlink()
+                            src.rename(dst)
+                except Exception as e:
+                    print(f"[contour] {step_dir.name}: skipped ({e})")
 
         return res
 

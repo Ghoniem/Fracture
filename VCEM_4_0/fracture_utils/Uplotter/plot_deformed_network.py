@@ -379,10 +379,11 @@ class DCEPlotterDeformedV4:
         show_junction_gap: bool = False,
         show: bool = True,
         save: bool = True,
-        debug_counts: bool = True,
+        debug_counts: bool = False,
         label_topology: bool = False,
         font_size: int = 16,
         label_offset_frac: float = 0.07,
+        disk_radius: float | None = None,
     ):
         """
         Plot the deformed crack network using solver-provided jump fields when available.
@@ -418,8 +419,29 @@ class DCEPlotterDeformedV4:
         Vc = np.asarray(Vc, float) if Vc else np.zeros((0, 2), float)
         sxy = _infer_units_scale_from_points(Vc, units)
 
-        fig, ax = plt.subplots(figsize=(6.5, 4.0))
+        fig, ax = plt.subplots(figsize=(7.2, 6.0))
         n_plotted, n_skipped = 0, 0
+
+        def _draw_disk_boundary():
+            if disk_radius is None:
+                return
+            try:
+                R = float(disk_radius) * sxy
+            except Exception:
+                return
+            if not np.isfinite(R) or R <= 0.0:
+                return
+            theta = np.linspace(0.0, 2.0 * np.pi, 361)
+            ax.plot(R * np.cos(theta), R * np.sin(theta),
+                    color="0.4", lw=1.0, alpha=0.8, zorder=1)
+            # Expand axis limits so the disk boundary is fully visible
+            # without shrinking limits already wider than the disk.
+            pad = 0.04 * R
+            x0, x1 = ax.get_xlim()
+            y0, y1 = ax.get_ylim()
+            ax.set_xlim(min(x0, -R - pad), max(x1, R + pad))
+            ax.set_ylim(min(y0, -R - pad), max(y1, R + pad))
+            ax.set_aspect("equal", adjustable="box")
 
         # If not parametrized solver output, just plot the graph midlines
         if not isinstance(sol, dict) or str(sol.get("solver_option", "")).lower() != "parametrized_crack":
@@ -437,6 +459,7 @@ class DCEPlotterDeformedV4:
             ax.tick_params(axis="both", which="major", labelsize=font_size)
             ax.grid(True, alpha=0.35)
             _set_graph_like_limits(ax, Vc * sxy if Vc.size else None)
+            _draw_disk_boundary()
             if label_topology:
                 _label_network_topology(
                     ax,
@@ -655,6 +678,7 @@ class DCEPlotterDeformedV4:
         ax.tick_params(axis="both", which="major", labelsize=font_size)
         ax.grid(True, alpha=0.35)
         _set_graph_like_limits(ax, Vc * sxy if Vc.size else None)
+        _draw_disk_boundary()
 
         if label_topology:
             _label_network_topology(

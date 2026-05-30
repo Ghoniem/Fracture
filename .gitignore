@@ -86,3 +86,6 @@ scratch/
 *.npz
 *.h5
 *.hdf5
+
+# Simulation run outputs (large, regenerable)
+VCEM_4_0/output/
