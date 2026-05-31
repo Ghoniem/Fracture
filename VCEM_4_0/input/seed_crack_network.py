@@ -80,6 +80,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--std-mm", type=float, default=4.0, help="length stddev [mm]")
     ap.add_argument("--min-mm", type=float, default=0.1, help="length lower truncation [mm]")
     ap.add_argument("--max-mm", type=float, default=None, help="length upper truncation [mm]")
+    ap.add_argument(
+        "--dist", choices=("truncnorm", "lognormal"), default="truncnorm",
+        help="length distribution. Use 'lognormal' when std >= mean "
+             "(truncnorm clips badly there).",
+    )
     ap.add_argument("--margin-mm", type=float, default=0.5, help="boundary margin [mm]")
     ap.add_argument("--domain", choices=("disk", "rect"), default="disk")
     ap.add_argument("--rect-w-mm", type=float, default=None, help="rect domain width [mm]")
@@ -113,6 +118,7 @@ def main(argv: list[str] | None = None) -> int:
         domain_size=domain_size,
         length_min=args.min_mm * mm,
         length_max=(args.max_mm * mm) if args.max_mm is not None else None,
+        length_dist=args.dist,
         angle_range_deg=(args.angle_lo_deg, args.angle_hi_deg),
         margin=args.margin_mm * mm,
         seed=args.seed,

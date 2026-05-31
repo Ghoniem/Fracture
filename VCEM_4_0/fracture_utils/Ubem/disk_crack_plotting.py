@@ -1,4 +1,5 @@
 
+import json
 from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
@@ -27,6 +28,7 @@ class PlotParams:
         n_line_levels=20,
         fixed_vlim_mpa=None,
         augmented_correction_stride=4,
+        lock_vlim_to_first_step=True,
     ):
         self.cmap = cmap
         self.n_bands = n_bands
@@ -43,6 +45,81 @@ class PlotParams:
         # Evaluate augmented correction field on coarse grid and interpolate to speed up.
         # 1 => full grid (slow), 2/4 => much faster.
         self.augmented_correction_stride = int(max(1, augmented_correction_stride))
+        # When True, the first per-STEP contour call computes the robust
+        # vlim from its data and caches it to run_dir/stress_vlim_mpa.json;
+        # subsequent STEPs read that cached value so the colorbar stays
+        # constant across all frames (defects remain visible at the same
+        # color throughout the run). Overridden by fixed_vlim_mpa when set.
+        self.lock_vlim_to_first_step = bool(lock_vlim_to_first_step)
+
+
+# ============================================================
+# Shared vlim cache (locked across STEPs)
+# ============================================================
+_VLIM_CACHE_NAME = "stress_vlim_mpa.json"
+
+
+def _vlim_cache_path(out_dir: Path) -> Path:
+    """Resolve cache path: out_dir is the STEP dir, cache lives in run dir."""
+    return Path(out_dir).parent / _VLIM_CACHE_NAME
+
+
+def _resolve_vlim_mpa(name, Z_ref_pa, Z_tot_pa, params, out_dir,
+                      robust_vlim_fn):
+    """Decide the colorbar half-range in MPa for one component.
+
+    Resolution order:
+      1) ``params.fixed_vlim_mpa`` -- explicit absolute cap, always wins.
+      2) ``params.lock_vlim_to_first_step`` + cached value for this
+         component name in ``out_dir.parent/stress_vlim_mpa.json``.
+         Subsequent STEPs read from the cache so colorbar stays constant.
+      3) Compute the robust vlim from this STEP's data and (if locking is
+         on) write it into the cache for later STEPs to pick up.
+
+    Returns the half-range (positive MPa) or None when no finite vlim can
+    be determined; callers fall back to letting matplotlib auto-pick.
+    """
+    fixed = None
+    if params.fixed_vlim_mpa is not None:
+        try:
+            fixed = float(params.fixed_vlim_mpa)
+        except Exception:
+            fixed = None
+        if fixed is not None and fixed <= 0.0:
+            fixed = None
+    if fixed is not None:
+        return fixed
+
+    lock = bool(getattr(params, "lock_vlim_to_first_step", True))
+    cache_path = _vlim_cache_path(out_dir)
+    cached_data = {}
+    if lock and cache_path.exists():
+        try:
+            cached_data = json.loads(cache_path.read_text())
+        except Exception:
+            cached_data = {}
+    cached_val = cached_data.get(name) if isinstance(cached_data, dict) else None
+    if cached_val is not None:
+        try:
+            cv = float(cached_val)
+            if np.isfinite(cv) and cv > 0.0:
+                return cv
+        except Exception:
+            pass
+
+    vlim_pa = robust_vlim_fn(Z_ref_pa if params.match_limits_to_crack else Z_tot_pa)
+    if vlim_pa is None or not np.isfinite(vlim_pa) or vlim_pa <= 0.0:
+        return None
+    vlim_mpa = float(vlim_pa) * 1e-6
+
+    if lock:
+        try:
+            cached_data[name] = vlim_mpa
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_text(json.dumps(cached_data, indent=2))
+        except Exception as e:
+            print(f"[plot_total_field] vlim cache write failed: {e}")
+    return vlim_mpa
 
 
 # ============================================================
@@ -189,28 +266,11 @@ def _plot_total_field_polar(bem_dir, res, out_dir, tag, params: PlotParams, show
         return float(q) * float(params.vmax_factor)
 
     def _plot(Z_tot_pa, Z_ref_pa, name):
-        vlim = _robust_vlim(Z_ref_pa if params.match_limits_to_crack else Z_tot_pa)
         Zm = Z_tot_pa * 1e-6
-
-        fixed_vlim_mpa = None
-        if params.fixed_vlim_mpa is not None:
-            try:
-                fixed_vlim_mpa = float(params.fixed_vlim_mpa)
-            except Exception:
-                fixed_vlim_mpa = None
-            if fixed_vlim_mpa is not None and fixed_vlim_mpa <= 0.0:
-                fixed_vlim_mpa = None
-
-        if fixed_vlim_mpa is not None:
-            vlim_mpa = fixed_vlim_mpa
-            if params.symmetric:
-                vmin, vmax = -vlim_mpa, vlim_mpa
-            else:
-                vmin, vmax = np.nanmin(Zm), np.nanmax(Zm)
-            levels = np.linspace(vmin, vmax, int(params.n_levels))
-            line_levels = np.linspace(vmin, vmax, int(params.n_line_levels))
-        elif vlim is not None:
-            vlim_mpa = vlim * 1e-6
+        vlim_mpa = _resolve_vlim_mpa(
+            name, Z_ref_pa, Z_tot_pa, params, out_dir, _robust_vlim,
+        )
+        if vlim_mpa is not None:
             if params.symmetric:
                 vmin, vmax = -vlim_mpa, vlim_mpa
             else:
@@ -424,29 +484,11 @@ def plot_total_field(bem_dir, res, out_dir, tag, params: PlotParams, show=True):
         return float(q) * float(params.vmax_factor)
 
     def _plot(Z_tot_pa, Z_ref_pa, name):
-        # Scaling:
-        vlim = _robust_vlim(Z_ref_pa if params.match_limits_to_crack else Z_tot_pa)
         Zm = Z_tot_pa * 1e-6  # MPa
-
-        fixed_vlim_mpa = None
-        if params.fixed_vlim_mpa is not None:
-            try:
-                fixed_vlim_mpa = float(params.fixed_vlim_mpa)
-            except Exception:
-                fixed_vlim_mpa = None
-            if fixed_vlim_mpa is not None and fixed_vlim_mpa <= 0.0:
-                fixed_vlim_mpa = None
-
-        if fixed_vlim_mpa is not None:
-            vlim_mpa = fixed_vlim_mpa
-            if params.symmetric:
-                vmin, vmax = -vlim_mpa, vlim_mpa
-            else:
-                vmin, vmax = np.nanmin(Zm), np.nanmax(Zm)
-            levels = np.linspace(vmin, vmax, int(params.n_levels))
-            line_levels = np.linspace(vmin, vmax, int(params.n_line_levels))
-        elif vlim is not None:
-            vlim_mpa = vlim * 1e-6
+        vlim_mpa = _resolve_vlim_mpa(
+            name, Z_ref_pa, Z_tot_pa, params, out_dir, _robust_vlim,
+        )
+        if vlim_mpa is not None:
             if params.symmetric:
                 vmin, vmax = -vlim_mpa, vlim_mpa
             else:

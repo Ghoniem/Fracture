@@ -1,9 +1,10 @@
 """Random straight-crack generator.
 
 Builds a network of `N` disconnected straight cracks, each a single edge
-between two tip vertices. Crack lengths follow a (truncated) normal
-distribution; centers are drawn uniformly inside the chosen domain
-('disk' or 'rect'); orientations are uniform in `angle_range_deg`.
+between two tip vertices. Crack lengths follow either a truncated normal
+or a lognormal distribution; centers are drawn uniformly inside the
+chosen domain ('disk' or 'rect'); orientations are uniform in
+`angle_range_deg`.
 
 Returned arrays match the CRACK_NETWORK sheet schema consumed by
 `input.excel_io._load_crack_network`:
@@ -29,9 +30,59 @@ def _sample_lengths(
     std: float,
     lo: float,
     hi: float | None,
+    *,
+    dist: str = "truncnorm",
 ) -> np.ndarray:
+    """Draw `n` length samples from the requested distribution.
+
+    dist == "truncnorm": truncated normal with target arithmetic mean/std
+    on the truncated support [lo, hi]. (Same as the historical behavior;
+    note that aggressive truncation skews the realised moments away from
+    the requested ones.)
+
+    dist == "lognormal": lognormal whose unconditional mean and std
+    match the requested `mean` and `std`. Underlying-normal parameters
+    are derived as
+        sigma^2 = ln(1 + (std/mean)^2),  mu = ln(mean) - sigma^2/2.
+    Out-of-range draws (length < lo or, if hi given, length > hi) are
+    rejected and re-sampled so the realised support stays inside [lo, hi].
+    Use this when std >= mean, where a truncated normal would clip a
+    large fraction of the distribution and badly bias the moments.
+    """
     if std <= 0.0:
         return np.full(n, mean, dtype=float)
+    dist = str(dist).lower().strip()
+    if dist == "lognormal":
+        if mean <= 0.0:
+            raise ValueError("lognormal length_mean must be positive")
+        cv2 = (std / mean) ** 2
+        sigma2 = float(np.log(1.0 + cv2))
+        sigma = float(np.sqrt(sigma2))
+        mu = float(np.log(mean) - 0.5 * sigma2)
+        out = np.empty(n, float)
+        filled = 0
+        for _ in range(50 * n + 100):
+            if filled >= n:
+                break
+            need = n - filled
+            draws = rng.lognormal(mean=mu, sigma=sigma, size=max(need, 16))
+            ok = draws >= lo
+            if hi is not None:
+                ok &= draws <= hi
+            keep = draws[ok]
+            take = min(keep.size, need)
+            out[filled : filled + take] = keep[:take]
+            filled += take
+        if filled < n:
+            raise RuntimeError(
+                "lognormal length sampling could not fill the request -- "
+                "check length_min/length_max bounds against mean/std"
+            )
+        return out
+    if dist != "truncnorm":
+        raise ValueError(
+            f"unknown length distribution {dist!r}; use 'truncnorm' or 'lognormal'"
+        )
     a = (lo - mean) / std
     b = np.inf if hi is None else (hi - mean) / std
     return truncnorm.rvs(a, b, loc=mean, scale=std, size=n, random_state=rng)
@@ -80,6 +131,7 @@ def random_straight_cracks(
     domain_size: DomainSize = 12.7e-3,
     length_min: float = 1.0e-4,
     length_max: float | None = None,
+    length_dist: str = "truncnorm",
     angle_range_deg: Tuple[float, float] = (0.0, 180.0),
     margin: float = 0.0,
     seed: int | None = None,
@@ -125,32 +177,51 @@ def random_straight_cracks(
     rng = np.random.default_rng(seed)
     angle_lo, angle_hi = float(angle_range_deg[0]), float(angle_range_deg[1])
 
+    # Split the per-crack budget into a coarse "length resample" outer loop
+    # and a "position+angle attempts at that fixed length" inner loop. Drawing
+    # a fresh length on every attempt (as the legacy code did) biases the
+    # realised distribution toward the small-length tail under heavy domain
+    # constraint: long lengths fail the endpoints-inside test more often, so
+    # the next attempt draws a typically shorter length and accepts it. With
+    # the split, each sampled length gets a fair number of placement tries
+    # before it's discarded, so the realised length distribution stays close
+    # to the requested one (subject to the unavoidable upper-tail truncation
+    # imposed by the domain geometry).
+    n_outer = max(1, min(20, int(max_attempts_per_crack) // 25))
+    n_inner = max(1, int(max_attempts_per_crack) // n_outer)
+
     verts: list[list[float]] = []
     edges: list[list[int]] = []
     skipped = 0
     for k in range(n_cracks):
         accepted = False
-        for _ in range(max_attempts_per_crack):
+        for _ in range(n_outer):
             length = float(
-                _sample_lengths(rng, 1, length_mean, length_std, length_min, length_max)[0]
+                _sample_lengths(
+                    rng, 1, length_mean, length_std,
+                    length_min, length_max, dist=length_dist,
+                )[0]
             )
-            if domain_shape == "disk":
-                center = _sample_centers_disk(rng, 1, float(domain_size), margin)[0]
-            else:
-                w, h = domain_size  # type: ignore[misc]
-                center = _sample_centers_rect(rng, 1, float(w), float(h), margin)[0]
-            theta = np.deg2rad(rng.uniform(angle_lo, angle_hi))
             half = 0.5 * length
-            dx, dy = half * np.cos(theta), half * np.sin(theta)
-            p0 = np.array([center[0] - dx, center[1] - dy])
-            p1 = np.array([center[0] + dx, center[1] + dy])
-            if _endpoints_inside(p0, p1, domain_shape, domain_size, margin):
-                v0 = len(verts)
-                v1 = v0 + 1
-                verts.append([float(v0), float(p0[0]), float(p0[1])])
-                verts.append([float(v1), float(p1[0]), float(p1[1])])
-                edges.append([v0, v1])
-                accepted = True
+            for _ in range(n_inner):
+                if domain_shape == "disk":
+                    center = _sample_centers_disk(rng, 1, float(domain_size), margin)[0]
+                else:
+                    w, h = domain_size  # type: ignore[misc]
+                    center = _sample_centers_rect(rng, 1, float(w), float(h), margin)[0]
+                theta = np.deg2rad(rng.uniform(angle_lo, angle_hi))
+                dx, dy = half * np.cos(theta), half * np.sin(theta)
+                p0 = np.array([center[0] - dx, center[1] - dy])
+                p1 = np.array([center[0] + dx, center[1] + dy])
+                if _endpoints_inside(p0, p1, domain_shape, domain_size, margin):
+                    v0 = len(verts)
+                    v1 = v0 + 1
+                    verts.append([float(v0), float(p0[0]), float(p0[1])])
+                    verts.append([float(v1), float(p1[0]), float(p1[1])])
+                    edges.append([v0, v1])
+                    accepted = True
+                    break
+            if accepted:
                 break
         if not accepted:
             skipped += 1

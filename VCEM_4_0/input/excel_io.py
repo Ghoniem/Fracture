@@ -339,6 +339,10 @@ def load_case(xlsx_path: str | Path) -> CaseConfig:
     )
 
     # ----- PlotParams ---------------------------------------------------
+    # plot.lock_vlim_to_first_step (optional): freeze the contour colorbar
+    # to the STEP_00 robust range so per-STEP frames stay visually
+    # comparable. Defaults to True via PlotParams' own default when the
+    # row is absent from the workbook.
     plot = PlotParams(
         cmap=_as_str(_require(cfg, "plot.cmap", cfg_sheet)),
         match_limits_to_crack=_as_bool(_require(cfg, "plot.match_limits_to_crack", cfg_sheet)),
@@ -349,6 +353,9 @@ def load_case(xlsx_path: str | Path) -> CaseConfig:
         n_levels=_as_int(_require(cfg, "plot.n_levels", cfg_sheet)),
         n_line_levels=_as_int(_require(cfg, "plot.n_line_levels", cfg_sheet)),
         dpi=_as_int(_require(cfg, "plot.dpi", cfg_sheet)),
+        lock_vlim_to_first_step=_as_bool(
+            cfg.get("plot.lock_vlim_to_first_step", True)
+        ),
     )
 
     return CaseConfig(

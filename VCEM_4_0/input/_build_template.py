@@ -174,6 +174,8 @@ CFG_LOGIC_ROWS = [
         BOOL),
     ("plot.show_final",                       True,          "Show the final-state plot",
         BOOL),
+    ("plot.lock_vlim_to_first_step",          True,          "Lock per-STEP stress colorbar to STEP_00's robust range so frames stay visually comparable (defects keep the same color throughout the run). Cached in run_dir/stress_vlim_mpa.json. False = per-STEP auto-scale (legacy).",
+        BOOL),
 ]
 
 # --------------------------------------------- CONFIGURATION_PARAM
