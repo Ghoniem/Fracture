@@ -496,6 +496,128 @@ def plot_total_field(bem_dir, res, out_dir, tag, params: PlotParams, show=True):
 
 
 # ============================================================
+# End-of-run STEP-metrics plots
+# ============================================================
+def plot_step_metrics(
+    step_history,
+    out_dir,
+    *,
+    dpi: int = 200,
+) -> dict:
+    """Render the three end-of-run STEP plots and save the underlying arrays.
+
+    ``step_history`` is a list of dicts produced by ``run_growth_steps``,
+    with one row per STEP_NN containing ``alpha``, ``Q`` (topology
+    metrics), and a per-tip ``tips`` list of {tip_vid, KI, KII}.
+
+    Writes three PNGs into ``out_dir``:
+      * ``metrics_alpha_vs_step.png``  -- damage parameter alpha vs STEP.
+      * ``metrics_Q_vs_step.png``      -- network alignment factor Q vs STEP.
+      * ``metrics_SIF_per_tip_vs_step.png`` -- one colored curve per tip vid.
+
+    Also saves ``step_metrics.npz`` (steps, alpha, Q, P_infty, L_total_m,
+    tip_vids, K_eff[step,tip] in MPa*sqrt(m)).
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    if not step_history:
+        print("[step-metrics] empty history; nothing to plot")
+        return {}
+
+    steps = np.array([int(r["step"]) for r in step_history], int)
+    alpha = np.array([float(r.get("alpha", np.nan)) for r in step_history], float)
+    Q     = np.array([float(r.get("Q", np.nan)) for r in step_history], float)
+    Pinf  = np.array([float(r.get("P_infty", np.nan)) for r in step_history], float)
+    Ltot  = np.array([float(r.get("L_total_m", np.nan)) for r in step_history], float)
+
+    # Collect union of tip_vids and assemble a (n_steps, n_tips) K_eff array
+    # in MPa*sqrt(m). Missing values are NaN (tip absent at that step).
+    all_vids = []
+    for row in step_history:
+        for tip in row.get("tips", []) or []:
+            all_vids.append(int(tip["tip_vid"]))
+    tip_vids = sorted(set(all_vids))
+    vid_to_col = {v: i for i, v in enumerate(tip_vids)}
+    keff = np.full((len(steps), len(tip_vids)), np.nan, float)
+    for si, row in enumerate(step_history):
+        for tip in row.get("tips", []) or []:
+            KI = float(tip.get("KI", np.nan))
+            KII = float(tip.get("KII", np.nan))
+            if np.isfinite(KI) and np.isfinite(KII):
+                keff[si, vid_to_col[int(tip["tip_vid"])]] = (
+                    float(np.sqrt(KI * KI + KII * KII)) * 1e-6
+                )
+
+    # --- alpha vs STEP
+    fig, ax = plt.subplots(figsize=(6.5, 4.2), dpi=dpi)
+    ax.plot(steps, alpha, marker="o", lw=1.4, color="tab:blue")
+    ax.set_xlabel("STEP")
+    ax.set_ylabel(r"Damage parameter $\alpha$")
+    ax.set_title("Damage parameter vs STEP")
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(out_dir / "metrics_alpha_vs_step.png", bbox_inches="tight")
+    plt.close(fig)
+
+    # --- Q vs STEP
+    fig, ax = plt.subplots(figsize=(6.5, 4.2), dpi=dpi)
+    ax.plot(steps, Q, marker="s", lw=1.4, color="tab:orange")
+    ax.set_xlabel("STEP")
+    ax.set_ylabel(r"Alignment factor $Q$")
+    ax.set_title("Network alignment vs STEP")
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(out_dir / "metrics_Q_vs_step.png", bbox_inches="tight")
+    plt.close(fig)
+
+    # --- per-tip K_eff vs STEP (one colored curve per tip vid)
+    fig, ax = plt.subplots(figsize=(7.5, 4.6), dpi=dpi)
+    if tip_vids:
+        cmap = plt.get_cmap("tab20" if len(tip_vids) > 10 else "tab10")
+        for j, vid in enumerate(tip_vids):
+            ax.plot(
+                steps, keff[:, j],
+                marker="o", lw=1.1, ms=3.0,
+                color=cmap(j % cmap.N),
+                label=f"tip {vid}",
+            )
+        if len(tip_vids) <= 20:
+            ax.legend(loc="best", fontsize=8, ncols=2)
+    ax.set_xlabel("STEP")
+    ax.set_ylabel(r"$K_{\mathrm{eff}}$ [MPa$\cdot\sqrt{m}$]")
+    ax.set_title("SIF per deg-1 tip vs STEP")
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(out_dir / "metrics_SIF_per_tip_vs_step.png", bbox_inches="tight")
+    plt.close(fig)
+
+    np.savez(
+        out_dir / "step_metrics.npz",
+        steps=steps,
+        alpha=alpha,
+        Q=Q,
+        P_infty=Pinf,
+        L_total_m=Ltot,
+        tip_vids=np.asarray(tip_vids, int),
+        K_eff_MPa_sqrt_m=keff,
+    )
+    print(
+        f"[step-metrics] wrote alpha/Q/SIF plots + step_metrics.npz to {out_dir.name} "
+        f"({len(steps)} steps, {len(tip_vids)} tip ids)"
+    )
+    return {
+        "steps": steps,
+        "alpha": alpha,
+        "Q": Q,
+        "P_infty": Pinf,
+        "L_total_m": Ltot,
+        "tip_vids": tip_vids,
+        "K_eff_MPa_sqrt_m": keff,
+    }
+
+
+# ============================================================
 # Hook factory (TOTAL ONLY)
 # ============================================================
 def make_standard_plot_hook(
@@ -511,7 +633,7 @@ def make_standard_plot_hook(
 
     def _hook(tag, res, step_dir):
 
-        # ---- Initial
+        # ---- Initial (STEP_00 in the flat driver, "initial" tag legacy)
         if tag == "initial":
             plot_total_field(
                 bem_dir,
@@ -523,7 +645,19 @@ def make_standard_plot_hook(
             )
             return
 
-        # ---- Cycle
+        # ---- Flat STEP_NN driver tag
+        if tag.startswith("step_"):
+            plot_total_field(
+                bem_dir,
+                res,
+                out_dir=combined_out_dir,
+                tag=tag,
+                params=plot_params,
+                show=show_cycles,
+            )
+            return
+
+        # ---- Legacy cycle_NN driver tag
         if tag.startswith("cycle_"):
             if only_post_simplify and (not tag.endswith("post_simplify")):
                 return

@@ -80,9 +80,8 @@ class BEMBlockV2:
         self.disk = disk
         self.out_dir = Path(out_dir)
         self.out_dir.mkdir(parents=True, exist_ok=True)
-        self.mesh = build_boundary(
-            {"type": "circle", "R": float(disk.R), "n_boundary": int(disk.n_boundary_elements), "center": (0.0, 0.0)}
-        )
+        from fracture_utils.Ubem.brazilian_disk_bem import build_disk_boundary
+        self.mesh = build_disk_boundary(disk)
 
         self.tx_ext, self.ty_ext = _disk_external_boundary_tractions(self.mesh, self.disk)
         self.external: Optional[BEMState] = None
@@ -209,6 +208,9 @@ class BEMBlockV2:
             plane_strain=True,
             gauss_n=int(gauss_n),
             d_mode=str(d_mode),
+            boundary_mesh=str(getattr(self.disk, "boundary_mesh", "uniform")),
+            boundary_concentration=float(getattr(self.disk, "boundary_concentration", 8.0)),
+            boundary_taper_exponent=float(getattr(self.disk, "boundary_taper_exponent", 4.0)),
         )
 
 

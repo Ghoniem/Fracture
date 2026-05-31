@@ -36,13 +36,16 @@ DEFAULT_METRICS: Sequence[str] = (
 
 
 def _cycle_dirs(run_dir: Path) -> List[Path]:
-    """Return cycle directories in chronological order across all outer cycles.
+    """Return step / cycle directories in chronological order.
 
-    Order: outer_01_growth/cycle_00_initial, outer_01_growth/cycle_01, ...,
-           outer_02_growth/cycle_00_initial, ... etc.
-    Lexicographic sort gives the right order because of the zero-padded indices
-    and 'cycle_00_initial' < 'cycle_01' < 'cycle_02' < 'cycle_NN_terminated_*'.
+    Prefers the new flat STEP_NN layout (run_dir/STEP_*) emitted by the
+    step-based driver. Falls back to the legacy outer_NN_growth/cycle_NN
+    layout when no STEP_* dirs are present.
     """
+    step_dirs = sorted(p for p in run_dir.glob("STEP_*") if p.is_dir())
+    if step_dirs:
+        return step_dirs
+
     outers = sorted(p for p in run_dir.glob("outer_*_growth") if p.is_dir())
     out: List[Path] = []
     for outer in outers:
@@ -110,7 +113,7 @@ def make_videos(
 
     cycle_dirs = _cycle_dirs(run_dir)
     if not cycle_dirs:
-        raise SystemExit(f"no outer_*_growth/cycle_* directories found under {run_dir}")
+        raise SystemExit(f"no STEP_* or outer_*_growth/cycle_* directories found under {run_dir}")
 
     out_dir = run_dir / out_subdir
     out_dir.mkdir(parents=True, exist_ok=True)

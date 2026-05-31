@@ -73,6 +73,17 @@ class CaseConfig:
     # Run mode
     engine: str
     coupling_method: str
+    # Total number of grow + solve steps. STEP_00 is the initial pre-grow
+    # state; STEP_01 .. STEP_<max_steps> are growth increments. Replaces
+    # the legacy (outer_cycles, crack_growth.max_cycles, max_inner_cycles_per_outer)
+    # triple with a single flat counter.
+    max_steps: int
+    # Fire the BEM correction (iterative reverse-traction or direct/full-KKT
+    # depending on coupling_method) every K steps. 0 disables correction
+    # (equivalent to coupling_method='no_coupling').
+    bem_correction_frequency: int
+    # Kept for backward compatibility with workbooks built before max_steps;
+    # the new STEP-based driver ignores this field.
     outer_cycles: int
     dry_run: bool
     skip_bem_solve: bool
@@ -81,6 +92,14 @@ class CaseConfig:
     crack_growth: CrackGrowthParams
     n_crack_elements: int
     parametrization: str
+    # Crack DOF / junction formulation (controls rank deficiency of K)
+    crack_mode: str                 # 'full' | 'half'
+    junction_model: str             # 'strict' | 'core' | 'soft' (only used when crack_mode='half')
+    soft_eta: float                 # penalty weight for junction_model='soft'
+    # Outer-loop early termination when the disk has fractured (a polyline
+    # spans from one boundary point to another -- further BEM solves are
+    # unphysical).
+    stop_on_spanning_cluster: bool
     # Augmented (direct-coupling) knobs
     aug_d_mode: str
     aug_gauss_n: int
@@ -201,6 +220,13 @@ def load_case(xlsx_path: str | Path) -> CaseConfig:
         cfg = _kv(sheets["CONFIGURATION"], cfg_sheet)
 
     # ----- BEM / disk params --------------------------------------------
+    # boundary_mesh / boundary_concentration / boundary_taper_exponent are
+    # optional (older workbooks predate them) -- default to a uniform circle.
+    _bmesh = _as_str(bem.get("boundary_mesh", "uniform")).lower().strip() or "uniform"
+    if _bmesh not in ("uniform", "clustered"):
+        raise ValueError(
+            f"BEM.boundary_mesh must be 'uniform' or 'clustered'; got {_bmesh!r}"
+        )
     disk = BrazilianDiskParams(
         R=_as_float(_require(bem, "R_m", "BEM")),
         P_total=_as_float(_require(bem, "P_total_N", "BEM")),
@@ -215,7 +241,22 @@ def load_case(xlsx_path: str | Path) -> CaseConfig:
         # via the GEOMETRY sheet.
         n_grid=_as_int(_require(geo, "grid_n_grid", "GEOMETRY")),
         pad_frac=_as_float(_require(geo, "grid_pad_frac", "GEOMETRY")),
+        boundary_mesh=_bmesh,
+        boundary_concentration=_as_float(bem.get("boundary_concentration", 8.0)),
+        boundary_taper_exponent=_as_float(bem.get("boundary_taper_exponent", 4.0)),
     )
+
+    # ----- Step-based run-mode knobs (BEM sheet) ------------------------
+    # max_steps: total number of growth STEPs (STEP_01..STEP_max_steps).
+    # bem_correction_frequency: fire BEM correction every K steps.
+    # Both optional for backward compatibility -- defaults from CaseConfig
+    # field semantics: max_steps=20, frequency=1 (every step).
+    _max_steps = _as_int(bem.get("max_steps", 20))
+    _bem_freq = _as_int(bem.get("BEM_correction_frequency", 1))
+    if _max_steps < 0:
+        raise ValueError(f"BEM.max_steps must be >= 0; got {_max_steps}")
+    if _bem_freq < 0:
+        raise ValueError(f"BEM.BEM_correction_frequency must be >= 0; got {_bem_freq}")
 
     # ----- Boundary spec (build_boundary input) -------------------------
     btype = _as_str(_require(geo, "boundary_type", "GEOMETRY")).lower()
@@ -310,6 +351,8 @@ def load_case(xlsx_path: str | Path) -> CaseConfig:
         connectivity=connectivity,
         engine=_as_str(_require(cfg, "engine", cfg_sheet)).lower(),
         coupling_method=_as_str(_require(cfg, "coupling_method", cfg_sheet)).lower(),
+        max_steps=_max_steps,
+        bem_correction_frequency=_bem_freq,
         outer_cycles=_as_int(_require(cfg, "outer_cycles", cfg_sheet)),
         dry_run=_as_bool(_require(cfg, "dry_run", cfg_sheet)),
         skip_bem_solve=_as_bool(_require(cfg, "skip_bem_solve", cfg_sheet)),
@@ -319,6 +362,28 @@ def load_case(xlsx_path: str | Path) -> CaseConfig:
         # Optional in older workbooks; defaults to 'polyline' (piecewise-linear
         # BEM panels with kink refinement at every interior vertex).
         parametrization=_as_str(cfg.get("solver_kwargs.parametrization", "polyline")).lower() or "polyline",
+        # 'full' bonds COD across junctions (no jump DOFs -> K is generally
+        # full-column-rank). 'half' adds per-side junction DOFs (creates a
+        # structural column-rank deficit absorbed by junction continuity
+        # equations in C or by soft penalty rows depending on junction_model).
+        # 'auto' lets the driver pick per outer cycle based on whether any
+        # deg>=2 vertex exists in the current network.
+        crack_mode=_as_str(cfg.get("solver_kwargs.crack_mode", "auto")).lower() or "auto",
+        # Only used when crack_mode='half'. 'strict' = one shared jump DOF
+        # per junction vertex (smallest column count, hardest conditioning).
+        # 'core' = per-branch-end DOFs with hard continuity equations in C.
+        # 'soft' = per-branch-end DOFs with weighted LS continuity rows
+        # appended to K (no constraint deficit, well-conditioned).
+        junction_model=_as_str(cfg.get("solver_kwargs.junction_model", "strict")).lower() or "strict",
+        # Penalty weight for junction_model='soft'. Larger eta -> tighter
+        # continuity at the cost of conditioning. Ignored otherwise.
+        soft_eta=_as_float(cfg.get("solver_kwargs.soft_eta", 1.0)),
+        # Stop the outer loop as soon as a polyline spans the disk boundary
+        # (the disk has fractured; further inner solves are unphysical).
+        # Default True even on older workbooks because the bad-K_eff regime
+        # past fragmentation is uniformly undesirable.
+        stop_on_spanning_cluster=_as_bool(cfg.get(
+            "crack_growth.stop_on_spanning_cluster", True)),
         aug_d_mode=_as_str(_require(cfg, "augmented.d_mode", cfg_sheet)),
         aug_gauss_n=_as_int(_require(cfg, "augmented.gauss_n", cfg_sheet)),
         aug_enforce_crack_equilibrium=_as_bool(_require(cfg, "augmented.enforce_crack_equilibrium", cfg_sheet)),
@@ -391,19 +456,29 @@ def save_supplementary_grid(
     *,
     solver=None,
     show: bool = True,
+    always_polar: bool = False,
 ) -> Optional[Dict[str, np.ndarray]]:
     """Evaluate the BEM stress on cfg.grid (polar / external) and save it
     alongside the rect arrays already produced by ensure_bem_field.
 
-    No-op when cfg.grid.source == 'builtin_rect' (the rect grid IS the
-    primary grid; nothing supplementary is needed).
+    No-op when cfg.grid.source == 'builtin_rect' AND ``always_polar`` is
+    False (the rect grid IS the primary grid; nothing supplementary is
+    needed).
 
-    When cfg.grid.source == 'builtin_polar':
+    When ``always_polar=True``, samples a polar grid regardless of
+    ``cfg.grid.source`` using ``cfg.grid.n_r`` / ``cfg.grid.n_theta`` /
+    ``cfg.grid.pad_frac``. The original ``cfg.grid`` is left untouched.
+    The polar arrays are then picked up by the plotting layer
+    (``plot_total_field`` and the baseline polar contour PNGs) so the
+    disk boundary is rendered as an exact circle.
+
+    When cfg.grid.source == 'builtin_polar' (or always_polar overrides
+    a rect/external source):
       saves rs.npy (n_r,), thetas.npy (n_theta,),
       xs_polar.npy / ys_polar.npy / Sxx_polar.npy / Syy_polar.npy /
       Sxy_polar.npy of shape (n_theta, n_r).
 
-    When cfg.grid.source == 'external_file':
+    When cfg.grid.source == 'external_file' (and not always_polar):
       saves xs_polar.npy / ys_polar.npy of shape (N,) and matching
       Sxx_polar / Syy_polar / Sxy_polar of shape (N,).
       (Same '_polar' suffix is used for both non-rect modes for
@@ -417,13 +492,21 @@ def save_supplementary_grid(
         run (with save_arrays=False, save_contours=False) just to get a
         solver. Passing the already-solved one in avoids a duplicate
         BEM solve.
+    always_polar
+        Force a polar overlay even when ``cfg.grid.source ==
+        'builtin_rect'``. Used by the run drivers so the per-cycle TOTAL
+        plots can always render on the polar grid (smooth disk boundary)
+        regardless of what primary grid the user selected.
 
     Returns
     -------
     dict | None
-        The supplementary arrays (None when source='builtin_rect').
+        The supplementary arrays (None when source='builtin_rect' and
+        always_polar is False).
     """
-    if cfg.grid.source == "builtin_rect":
+    polar_mode = (cfg.grid.source == "builtin_polar") or always_polar
+
+    if cfg.grid.source == "builtin_rect" and not always_polar:
         return None
 
     bem_dir = Path(bem_dir)
@@ -438,7 +521,23 @@ def save_supplementary_grid(
             show=False, save_arrays=False, save_contours=False,
         )
 
-    pts = build_grid_points(cfg)              # (N, 2)
+    # Choose evaluation points: forced polar overlay rebuilds them from
+    # cfg.grid.n_r/n_theta directly so an underlying source='builtin_rect'
+    # still produces a polar mesh. The non-forced branches keep using
+    # build_grid_points so the existing 'builtin_polar' / 'external_file'
+    # behaviour is unchanged.
+    if always_polar and cfg.grid.source != "builtin_polar":
+        n_r = int(cfg.grid.n_r)
+        n_t = int(cfg.grid.n_theta)
+        rs = np.linspace(0.0, cfg.disk.R * (1.0 - float(cfg.grid.pad_frac)), n_r)
+        thetas = np.linspace(0.0, 2.0 * np.pi, n_t, endpoint=False)
+        Rg, Tg = np.meshgrid(rs, thetas, indexing="xy")
+        xs_grid = Rg * np.cos(Tg)
+        ys_grid = Rg * np.sin(Tg)
+        pts = np.column_stack([xs_grid.ravel(), ys_grid.ravel()])
+    else:
+        pts = build_grid_points(cfg)              # (N, 2)
+
     Sxx = np.full(len(pts), np.nan, dtype=float)
     Syy = np.full(len(pts), np.nan, dtype=float)
     Sxy = np.full(len(pts), np.nan, dtype=float)
@@ -453,7 +552,7 @@ def save_supplementary_grid(
 
     out: Dict[str, np.ndarray] = {}
 
-    if cfg.grid.source == "builtin_polar":
+    if polar_mode:
         n_r = int(cfg.grid.n_r)
         n_t = int(cfg.grid.n_theta)
         rs = np.linspace(0.0, cfg.disk.R * (1.0 - float(cfg.grid.pad_frac)), n_r)
@@ -476,7 +575,8 @@ def save_supplementary_grid(
         out.update(rs=rs, thetas=thetas, xs=xs_p, ys=ys_p,
                    Sxx=Sxx_p, Syy=Syy_p, Sxy=Sxy_p)
         n_valid = int(np.isfinite(Sxx_p).sum())
-        print(f"[polar] saved (n_theta={n_t}, n_r={n_r}); "
+        tag = "polar (forced)" if always_polar and cfg.grid.source != "builtin_polar" else "polar"
+        print(f"[{tag}] saved (n_theta={n_t}, n_r={n_r}); "
               f"{n_valid}/{n_t*n_r} points evaluated.")
     else:  # external_file
         np.save(bem_dir / "xs_polar.npy", pts[:, 0])
@@ -490,7 +590,8 @@ def save_supplementary_grid(
               f"{n_valid} evaluated.")
 
     if show:
-        plot_supplementary_grid(cfg, bem_dir, arrays=out)
+        plot_supplementary_grid(cfg, bem_dir, arrays=out,
+                                force_polar=polar_mode, show=True)
 
     return out
 
@@ -500,14 +601,23 @@ def plot_supplementary_grid(
     bem_dir: str | Path,
     *,
     arrays: Optional[Dict[str, np.ndarray]] = None,
+    force_polar: bool = False,
+    show: bool = False,
 ) -> None:
     """Save brazilian_disk_Sxx_polar.png / _Syy_polar.png / _Sxy_polar.png
     contour plots of the supplementary grid produced by
     save_supplementary_grid.
 
     For polar grids, uses contourf on the (xs_p, ys_p) Cartesian
-    projection so the plot shape matches the disk. For external_file
+    projection so the plot shape matches the disk, and overlays
+    ``cfg.plot.n_line_levels`` contour lines (matching the rect baseline
+    ``brazilian_disk_<comp>_contour.png`` style). For external_file
     (scattered) grids, uses tricontourf.
+
+    Set ``force_polar=True`` when the caller emitted polar arrays via
+    ``save_supplementary_grid(always_polar=True)`` on top of a
+    ``builtin_rect`` source -- otherwise the auto-load branch sees the
+    rect source and bails.
     """
     import matplotlib.pyplot as plt
     from matplotlib import tri as _tri
@@ -515,7 +625,7 @@ def plot_supplementary_grid(
     bem_dir = Path(bem_dir)
 
     if arrays is None:
-        if cfg.grid.source == "builtin_polar":
+        if cfg.grid.source == "builtin_polar" or force_polar:
             arrays = {
                 "xs": np.load(bem_dir / "xs_polar.npy"),
                 "ys": np.load(bem_dir / "ys_polar.npy"),
@@ -550,10 +660,17 @@ def plot_supplementary_grid(
     else:
         _wrap_polar = False
 
+    # Match the styling of the legacy rect "sigma_xx" baseline plots so the
+    # field plots before STEP_00 are visually consistent with the per-step
+    # TOTAL polar plots: axes in mm, "Stress [MPa]" colorbar, symmetric
+    # robust limits, sigma_xx-style title.
+    xs_mm = xs * 1e3
+    ys_mm = ys * 1e3
+    comp_titles = {"Sxx": "σ_xx", "Syy": "σ_yy", "Sxy": "σ_xy"}
     for name, S in (("Sxx", arrays["Sxx"]),
                     ("Syy", arrays["Syy"]),
                     ("Sxy", arrays["Sxy"])):
-        fig, ax = plt.subplots(figsize=(6, 5), dpi=int(cfg.plot.dpi))
+        fig, ax = plt.subplots(figsize=(7.2, 6.0), dpi=int(cfg.plot.dpi))
         S_mpa = np.asarray(S, dtype=float) * 1e-6
         if _wrap_polar:
             S_mpa = np.vstack([S_mpa, S_mpa[:1, :]])
@@ -564,22 +681,32 @@ def plot_supplementary_grid(
             vmax = float(np.nanmax(np.abs(finite))) if finite.size else 1.0
         vmin = -vmax if cfg.plot.symmetric else float(np.nanmin(S_mpa))
         levels = np.linspace(vmin, vmax, int(cfg.plot.n_levels) + 1)
+        line_levels = np.linspace(vmin, vmax, int(cfg.plot.n_line_levels))
         if is_polar:
-            cs = ax.contourf(xs, ys, S_mpa, levels=levels,
+            cs = ax.contourf(xs_mm, ys_mm, S_mpa, levels=levels,
                              cmap=cfg.plot.cmap, extend="both")
+            ax.contour(xs_mm, ys_mm, S_mpa, levels=line_levels,
+                       colors="k", linewidths=0.5, alpha=0.6)
         else:
             mask = np.isfinite(S_mpa)
-            triang = _tri.Triangulation(xs[mask], ys[mask])
+            triang = _tri.Triangulation(xs_mm[mask], ys_mm[mask])
             cs = ax.tricontourf(triang, S_mpa[mask], levels=levels,
                                 cmap=cfg.plot.cmap, extend="both")
-        ax.set_aspect("equal")
-        ax.set_title(f"sigma_{name[-2:]} [MPa] ({cfg.grid.source})")
-        ax.set_xlabel("x [m]")
-        ax.set_ylabel("y [m]")
-        plt.colorbar(cs, ax=ax, label="MPa")
+            ax.tricontour(triang, S_mpa[mask], levels=line_levels,
+                          colors="k", linewidths=0.5, alpha=0.6)
+        ax.set_aspect("equal", "box")
+        ax.set_title(comp_titles[name])
+        ax.set_xlabel("x [mm]")
+        ax.set_ylabel("y [mm]")
+        ax.grid(True, alpha=0.25)
+        cbar = fig.colorbar(cs, ax=ax, shrink=0.92)
+        cbar.set_label("Stress [MPa]")
         out_path = bem_dir / f"brazilian_disk_{name}_polar.png"
         fig.savefig(out_path, bbox_inches="tight")
-        plt.close(fig)
+        if show:
+            plt.show()
+        else:
+            plt.close(fig)
 
 
 def build_grid_points(cfg: CaseConfig) -> np.ndarray:

@@ -52,6 +52,14 @@ BEM_ROWS = [
     ("n_boundary_elements", 120,       "Number of boundary elements on the outer circle",          INT),
     ("gauss_n",             4,         "Gauss-Legendre points per BEM element",                    INT),
     ("arc_half_angle_deg",  15.0,      "Half-angle [deg] of the loaded arc (top + bottom)",        FLOAT),
+    ("boundary_mesh",         "uniform", "Boundary-node distribution on the outer circle. "
+                                         "'clustered' concentrates nodes at the +/-90 deg platens "
+                                         "and tapers toward the equator.",                          "uniform | clustered"),
+    ("boundary_concentration", 8.0,     "(clustered) Peak/baseline density ratio at the platens",   FLOAT),
+    ("boundary_taper_exponent",4.0,     "(clustered) Taper rate; larger = sharper concentration",   FLOAT),
+    ("max_steps",            20,        "Total number of grow + solve STEPS. STEP_00 = initial state, "
+                                         "STEP_01..STEP_<max_steps> = grow increments.",              INT),
+    ("BEM_correction_frequency", 1,    "Fire BEM correction every K steps. 0 disables (no_coupling).", INT),
     # BCs for the disk pipeline are derived inside ensure_bem_field from
     # P_total + arc (top/bottom pressure_normal). Future support for
     # explicit BCSpec blocks will live in a dedicated BC_BLOCKS sheet.
@@ -130,6 +138,10 @@ CFG_LOGIC_ROWS = [
     # ----- one-way base solver_kwargs (string choice) ---------------
     ("solver_kwargs.parametrization",         "polyline",    "Per-polyline geometry the BEM solver assumes. 'polyline' keeps piecewise-linear segments with kink refinement at every interior vertex. 'cspline' fits a natural cubic spline (heavier; kept for opt-in experiments).",
         "polyline | cspline"),
+    ("solver_kwargs.crack_mode",              "auto",        "Crack DOF formulation. 'full' bonds COD across junctions (K is full column rank, well conditioned). 'half' allocates per-side COD DOFs at junctions (creates a structural column-rank deficit that the KKT constraints must absorb; needed when branches open independently at a junction). 'auto' picks per outer cycle: 'full' while every vertex is deg<=1, 'half' once any deg>=2 vertex appears (first intersection / junction).",
+        "auto | full | half"),
+    ("solver_kwargs.junction_model",          "strict",      "Junction DOF model (used only when crack_mode='half'). 'strict' shares one jump DOF per junction vertex (smallest column count). 'core' allocates per-branch-end DOFs with hard continuity rows in C. 'soft' appends weighted-LS continuity rows to K instead of C (no column-rank deficit, best conditioning).",
+        "strict | core | soft"),
 
     # ----- augmented (direct-coupling) bools + mode -----------------
     ("augmented.d_mode",                      "correction_zero", "Augmented displacement mode",
@@ -204,6 +216,8 @@ CFG_PARAM_ROWS = [
     # ----- one-way base solver_kwargs (numeric) ---------------------
     ("solver_kwargs.n_crack_elements",        40,            "Elements per crack segment (one-way KKT)",
         INT),
+    ("solver_kwargs.soft_eta",                1.0,           "Penalty weight for junction_model='soft' (ignored otherwise). Larger eta -> tighter junction continuity at the cost of conditioning; ~1.0 is a sensible neutral default.",
+        FLOAT),
 
     # ----- augmented (direct-coupling) numeric ----------------------
     ("augmented.gauss_n",                     4,             "Gauss-Legendre points for augmented payload",

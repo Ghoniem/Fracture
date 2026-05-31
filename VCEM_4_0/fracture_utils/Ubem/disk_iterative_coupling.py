@@ -269,8 +269,9 @@ def solve_bem_with_extra_boundary_tractions(
     bem_dir = Path(bem_dir)
     bem_dir.mkdir(parents=True, exist_ok=True)
 
-    # Rebuild boundary mesh
-    mesh = build_boundary({"type": "circle", "R": disk_params.R, "n_boundary": disk_params.n_boundary_elements, "center": (0.0, 0.0)})
+    # Rebuild boundary mesh (uniform or clustered per disk_params.boundary_mesh)
+    from fracture_utils.Ubem.brazilian_disk_bem import build_disk_boundary
+    mesh = build_disk_boundary(disk_params)
 
     theta_deg = np.asarray(mesh.theta_deg, dtype=float)
     L = np.asarray(mesh.length, dtype=float)

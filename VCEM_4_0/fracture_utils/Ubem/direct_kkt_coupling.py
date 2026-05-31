@@ -140,6 +140,9 @@ def build_disk_traction_augmented_data(
     plane_strain: bool = True,
     gauss_n: int = 4,
     d_mode: str = "correction_zero",
+    boundary_mesh: str = "uniform",
+    boundary_concentration: float = 8.0,
+    boundary_taper_exponent: float = 4.0,
 ) -> Dict[str, np.ndarray]:
     """
     Build fixed augmented-coupling data for a Brazilian disk with traction-only
@@ -152,7 +155,19 @@ def build_disk_traction_augmented_data(
         Use this when crack solve already includes applied/BEM field.
       - "external_total": enforce t_bc + t_cr(q) = t_ext.
     """
-    mesh = build_boundary({"type": "circle", "R": float(R), "n_boundary": int(n_boundary_elements), "center": (0.0, 0.0)})
+    kind = str(boundary_mesh).lower().strip()
+    if kind in ("clustered", "graded", "circle_graded"):
+        mesh = build_boundary({
+            "type": "circle_graded",
+            "R": float(R),
+            "n_boundary": int(n_boundary_elements),
+            "center": (0.0, 0.0),
+            "focal_angles_deg": [90.0, -90.0],
+            "concentration": float(boundary_concentration),
+            "taper_exponent": float(boundary_taper_exponent),
+        })
+    else:
+        mesh = build_boundary({"type": "circle", "R": float(R), "n_boundary": int(n_boundary_elements), "center": (0.0, 0.0)})
 
     segs: list[Segment] = []
     for i in range(mesh.n_seg):

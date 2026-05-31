@@ -955,3 +955,405 @@ def run_network_growth_uncoupled(
     if res is None:
         raise RuntimeError("No solver result was produced during network growth run.")
     return res
+
+
+# ============================================================
+# Flat step-based driver (new pipeline)
+# ============================================================
+def run_growth_steps(
+    *,
+    bem_dir: Path,
+    out_dir: Path,
+    vertices: np.ndarray,
+    connectivity: np.ndarray,
+    params: CrackGrowthParams,
+    max_steps: int,
+    bem_correction_frequency: int = 0,
+    bem_correction_hook: Optional[Callable[[Any, int], None]] = None,
+    plot_hook: Optional[Callable] = None,
+    plot_params: Optional[Any] = None,
+    original_initial_vertex_ids: Optional[Iterable[int]] = None,
+    snapped_vertex_ids: Optional[Iterable[int]] = None,
+    plot_initial: bool = True,
+):
+    """Flat STEP-based growth driver.
+
+    Writes ``STEP_00`` (initial pre-grow solve) and
+    ``STEP_01 .. STEP_<max_steps>`` (each = one grow_one_increment + solve)
+    directly under ``out_dir``. Replaces the legacy three-level
+    (outer-cycle -> cycle_NN -> inner while-loop) structure.
+
+    Parameters
+    ----------
+    max_steps
+        Number of growth STEPS to run after STEP_00. The total folder
+        count is max_steps + 1 (STEP_00 .. STEP_<max_steps>).
+    bem_correction_frequency
+        Fire the BEM correction every K steps. 0 disables (equivalent
+        to coupling_method='no_coupling').
+    bem_correction_hook : callable(res, step) -> None
+        Required when bem_correction_frequency > 0. The hook is expected
+        to overwrite ``bem_dir/{Sxx,Syy,Sxy}.npy`` in place (typically by
+        calling ``solve_bem_with_extra_boundary_tractions(...)`` for the
+        iterative path, or running a direct/full-KKT pass). The
+        propagator and applied-stress interpolators are rebuilt from the
+        refreshed BEM arrays after the hook returns, so the next step's
+        grow uses the corrected field.
+    plot_hook : callable(tag, res, step_dir) -> None
+        Tags emitted are ``"initial"`` for STEP_00 and ``"step_NN"`` for
+        STEP_NN.
+
+    Termination
+    -----------
+    Early-stops on ``params.stop_on_all_growth_force_zero`` and
+    ``params.stop_on_all_keff_below_kc`` (same semantics as the legacy
+    runner). Sets ``res.stopped_reason`` accordingly.
+    """
+    from preamble import (
+        Material, AppliedStress, CrackNetworkV4,
+        DCENetworkStaticV4, DCEResultsNetworkV4,
+        DCEPlotterV4, DCEPlotterDeformedV4,
+        PropagationConfig, ConstantToughness, MaximumHoopStressLaw,
+        CandidateEvaluator, CrackPropagator,
+        _call,
+    )
+    from fracture_utils.Upropagation.network_ops import get_netops
+    from fracture_utils.Ubem.crack_energetics import topology_metrics_for_network
+
+    mm = 1e-3
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    bem_dir = Path(bem_dir)
+    max_steps = int(max_steps)
+    bem_freq = int(bem_correction_frequency)
+    if bem_freq > 0 and bem_correction_hook is None:
+        raise ValueError(
+            "bem_correction_frequency > 0 requires bem_correction_hook "
+            "to overwrite the BEM arrays in bem_dir."
+        )
+
+    # Per-STEP metrics: alpha/Q/P_infty/L_total_m + per-tip KI/KII.
+    step_history: list = []
+
+    # ----- 1) Initial network + optional simplification ----------------
+    net = CrackNetworkV4.from_vertices_connectivity(
+        vertices=np.asarray(vertices, float),
+        connectivity=np.asarray(connectivity, int),
+        Nv_max=4,
+        validate=True,
+    )
+    if bool(params.simplify_at_outer_cycle_start):
+        print("[simplify] initial pass: merge aligned + snap-to-segment + intersect")
+        net = simplify_and_intersect(
+            net,
+            max_angle_deg=float(params.simp_max_angle_deg),
+            max_merged_edge_m=float(params.simp_max_merged_edge_mm) * mm,
+            merge_vertex_tol_m=float(params.simp_merge_tolerance_m),
+            snap_tol_m=float(params.simp_min_edge_mm) * mm,
+            detect_mode=params.intersection_detect_mode,
+            verbose=bool(params.intersection_verbose),
+        )
+
+    if original_initial_vertex_ids is None:
+        _init_vids = set(int(v.id) for v in net.vertices)
+    else:
+        _init_vids = set(int(v) for v in original_initial_vertex_ids)
+    _snapped_in = set(int(v) for v in snapped_vertex_ids) if snapped_vertex_ids else set()
+
+    # ----- 2) Per-state factories (rebuilt after each BEM correction) ---
+    # The propagator captures `applied` (which captures sigma_func via the
+    # RegularGridInterpolator). After a BEM correction overwrites the BEM
+    # arrays, we rebuild applied + evaluator + prop so the next grow uses
+    # the refreshed field.
+    material = Material(
+        E=params.material_E, nu=params.material_nu,
+        plane_stress=params.plane_stress,
+    )
+    base_solver_kwargs = dict(
+        n_crack_elements=100,
+        representation="cheb_quad",
+        node_distribution="tip_dense",
+        solver_option="parametrized_crack",
+        parametrization="polyline",
+        nq_col=12,
+        nq_stress=16,
+        crack_mode="half",
+        junction_model="core",
+    )
+    if isinstance(params.solver_kwargs, dict):
+        base_solver_kwargs.update(params.solver_kwargs)
+    Kc_from_kwargs = base_solver_kwargs.pop("Kc_demo", None)
+    _ = base_solver_kwargs.pop("K_demo", None)
+    Kc_eff = float(params.Kc_demo if Kc_from_kwargs is None else Kc_from_kwargs)
+    tough = ConstantToughness(Kc_eff)
+    dir_law = MaximumHoopStressLaw()
+    prop_cfg = PropagationConfig(
+        f0=params.f0,
+        f_fixed=params.f_fixed,
+        step_mode=params.step_mode,
+        simultaneous_tip_growth=params.simultaneous_tip_growth,
+        f_disk_radius=float(params.f_disk_radius),
+        disk_radius_m=float(params.disk_radius_m) if params.disk_radius_m is not None else 0.0,
+    )
+
+    def _build_applied_from_bem():
+        from scipy.interpolate import RegularGridInterpolator
+        xs = np.load(bem_dir / "xs.npy")
+        ys = np.load(bem_dir / "ys.npy")
+        Sxx = np.nan_to_num(np.load(bem_dir / "Sxx.npy"), nan=0.0)
+        Syy = np.nan_to_num(np.load(bem_dir / "Syy.npy"), nan=0.0)
+        Sxy = np.nan_to_num(np.load(bem_dir / "Sxy.npy"), nan=0.0)
+
+        def _align(S, name):
+            S = np.asarray(S, float)
+            if S.shape == (ys.size, xs.size):
+                return S
+            if S.shape == (xs.size, ys.size):
+                return S.T
+            raise ValueError(
+                f"BEM stress array {name}.npy has shape {S.shape}; expected "
+                f"(ys.size={ys.size}, xs.size={xs.size}). Stale arrays in "
+                f"bem_dir={bem_dir!s}? Re-run with skip_bem_solve=False or "
+                f"delete the *_npy files."
+            )
+        Sxx = _align(Sxx, "Sxx"); Syy = _align(Syy, "Syy"); Sxy = _align(Sxy, "Sxy")
+
+        Ixx = RegularGridInterpolator((ys, xs), Sxx, bounds_error=False, fill_value=0.0)
+        Iyy = RegularGridInterpolator((ys, xs), Syy, bounds_error=False, fill_value=0.0)
+        Ixy = RegularGridInterpolator((ys, xs), Sxy, bounds_error=False, fill_value=0.0)
+
+        def sigma_func(X):
+            X = np.asarray(X, float)
+            pts = np.column_stack([X[:, 1], X[:, 0]])
+            S = np.zeros((len(X), 2, 2))
+            S[:, 0, 0] = Ixx(pts)
+            S[:, 1, 1] = Iyy(pts)
+            S[:, 0, 1] = Ixy(pts)
+            S[:, 1, 0] = Ixy(pts)
+            return S
+
+        aug_active = isinstance(base_solver_kwargs.get("augmented_coupling", None), dict)
+        keep_bem_applied = bool(base_solver_kwargs.get("augmented_keep_bem_applied", True))
+        if aug_active and (not keep_bem_applied):
+            return AppliedStress(sigma_xx=0.0, sigma_yy=0.0, sigma_xy=0.0)
+        return AppliedStress(sigma_func=sigma_func)
+
+    def _build_prop(applied, snapped_vids):
+        evaluator = CandidateEvaluator(
+            material=material, applied=applied,
+            solver_kwargs=base_solver_kwargs,
+            direction_law=dir_law,
+            enable_n_crack_elements_escalation=False,
+        )
+        prop = CrackPropagator(
+            cfg=prop_cfg, evaluator=evaluator,
+            toughness=tough, direction_law=dir_law,
+            max_kink_deg=float(params.max_kink_deg),
+            initial_vertex_ids=_init_vids,
+            snapped_vertex_ids=snapped_vids,
+        )
+        return prop, evaluator
+
+    applied = _build_applied_from_bem()
+    prop, evaluator = _build_prop(applied, _snapped_in)
+    netops = get_netops()
+
+    # ----- 2b) topology-metrics helpers (alpha, Q, ...) ----------------
+    # Build the top/bottom-arc regions used by the alignment-factor Q. We
+    # only have these knobs when disk_radius_m is set; otherwise we infer
+    # the disk radius from the BEM grid extent.
+    _xs_grid = np.load(bem_dir / "xs.npy")
+    _ys_grid = np.load(bem_dir / "ys.npy")
+    R_disk = float(params.disk_radius_m) if params.disk_radius_m is not None else float(
+        max(np.max(np.abs(_xs_grid)), np.max(np.abs(_ys_grid)))
+    )
+    A_domain = float(params.domain_area_m2) if params.domain_area_m2 is not None else float(
+        np.pi * R_disk * R_disk
+    )
+    _band = float(max(params.boundary_band_frac, 0.0)) * R_disk
+    _arc = float(params.arc_half_angle_deg)
+
+    def _region_from_theta(theta_center_deg: float):
+        lo = float(theta_center_deg - _arc)
+        hi = float(theta_center_deg + _arc)
+        def _f(node_id, node_data):
+            pos = node_data.get("pos", None)
+            if pos is None:
+                return False
+            x, y = float(pos[0]), float(pos[1])
+            r = float(np.hypot(x, y))
+            if r < (R_disk - _band):
+                return False
+            th = float(np.degrees(np.arctan2(y, x)))
+            th = ((th + 180.0) % 360.0) - 180.0
+            return (th >= lo) and (th <= hi)
+        return _f
+
+    _top_region = _region_from_theta(90.0)
+    _bot_region = _region_from_theta(-90.0)
+
+    def _record_step_metrics(step_idx, network_state, res_state):
+        """Append per-step topology metrics + per-tip SIFs to step_history."""
+        try:
+            topo = topology_metrics_for_network(
+                network_state,
+                domain_area=A_domain,
+                region_1=_top_region,
+                region_2=_bot_region,
+                loading_axis=tuple(params.loading_axis),
+            )
+        except Exception as _e:
+            print(f"[step-metrics] STEP_{step_idx:02d}: topology failed ({_e})")
+            topo = {"alpha": float("nan"), "Q": float("nan"),
+                    "P_infty": float("nan"), "L_total_m": float("nan")}
+
+        # Per-tip SIFs at this step.
+        tips_out = []
+        try:
+            deg = netops.degree_map(network_state)
+            polylines = netops.extract_open_polylines(network_state)
+            tips = netops.extract_deg1_tips(network_state, polylines, deg) or []
+            for tip in tips:
+                vid = int(getattr(tip, "v_tip", -1))
+                try:
+                    tev = evaluator.eval_tip(res_state, tip)
+                    KI = float(getattr(tev, "KI", float("nan")))
+                    KII = float(getattr(tev, "KII", float("nan")))
+                except Exception:
+                    KI = float("nan"); KII = float("nan")
+                tips_out.append({"tip_vid": vid, "KI": KI, "KII": KII})
+        except Exception as _e:
+            print(f"[step-metrics] STEP_{step_idx:02d}: tip enumeration failed ({_e})")
+
+        step_history.append({
+            "step": int(step_idx),
+            "alpha": float(topo.get("alpha", float("nan"))),
+            "Q": float(topo.get("Q", float("nan"))),
+            "P_infty": float(topo.get("P_infty", float("nan"))),
+            "L_total_m": float(topo.get("L_total_m", float("nan"))),
+            "tips": tips_out,
+        })
+
+    # ----- 3) Per-step solve + save helper ------------------------------
+    def _solve_step(network, step_dir, *, save_outputs: bool):
+        print(f"[solve] {step_dir.name} (Nv={len(network.vertices)}, Ne={len(network.edges)})")
+        calc = DCENetworkStaticV4(material, network, applied)
+        sol = calc.solve(**base_solver_kwargs)
+        res = DCEResultsNetworkV4(calc, sol)
+        if save_outputs:
+            pl = DCEPlotterV4(res, out_dir=step_dir)
+            _call(pl, "plot_network_graph")
+            pl_def = DCEPlotterDeformedV4(res, out_dir=step_dir)
+            _call(
+                pl_def, "plot_deformed_network",
+                scale=float(getattr(params, "deformed_network_scale", 50.0)),
+                trim_core_junction_faces=True,
+                disk_radius=(float(params.disk_radius_m)
+                             if params.disk_radius_m is not None else None),
+            )
+            if bool(getattr(params, "enable_per_cycle_total_contour_save", False)) and plot_params is not None:
+                try:
+                    from fracture_utils.Ubem.disk_crack_plotting import plot_total_field
+                    tag = step_dir.name
+                    plot_total_field(bem_dir, res, out_dir=step_dir, tag=tag, params=plot_params, show=False)
+                    for comp in ("sxx", "syy", "sxy"):
+                        src = step_dir / f"total_{comp}_{tag}.png"
+                        dst = step_dir / f"brazilian_disk_{comp}_contour.png"
+                        if src.exists():
+                            if dst.exists():
+                                dst.unlink()
+                            src.rename(dst)
+                except Exception as e:
+                    print(f"[contour] {step_dir.name}: skipped ({e})")
+        return res
+
+    # ----- 4) Termination helpers --------------------------------------
+    def _all_keff_below(reports):
+        n = 0; finite = []
+        for rep in (reports or []):
+            n += 1
+            KI = float(getattr(rep, "KI", np.nan))
+            KII = float(getattr(rep, "KII", np.nan))
+            if np.isfinite(KI) and np.isfinite(KII):
+                finite.append(float(np.sqrt(KI * KI + KII * KII)))
+        if n <= 0 or len(finite) != n:
+            return False, n, 0, np.nan, np.nan
+        arr = np.asarray(finite, float)
+        return bool(np.all(arr <= Kc_eff)), n, len(finite), float(arr.min()), float(arr.max())
+
+    # ----- 5) STEP_00 = initial solve -----------------------------------
+    step_dir = out_dir / "STEP_00"
+    step_dir.mkdir(parents=True, exist_ok=True)
+    res = _solve_step(net, step_dir, save_outputs=bool(plot_initial))
+    if plot_initial and plot_hook:
+        plot_hook("initial", res, step_dir)
+    _record_step_metrics(0, net, res)
+    terminate_tag = ""
+
+    # ----- 6) STEP_01..STEP_<max_steps> ---------------------------------
+    try:
+        for step in range(1, max_steps + 1):
+            print(f"\n[STEP] {step}/{max_steps}", flush=True)
+            net_before = net
+            result = prop.grow_one_increment(net_before)
+            net = result.network_new
+            net = update_network_with_intersections(
+                net,
+                detect_mode=params.intersection_detect_mode,
+                verbose=params.intersection_verbose,
+                snap_tol_m=float(params.simp_min_edge_mm) * mm,
+            )
+
+            step_dir = out_dir / f"STEP_{step:02d}"
+            step_dir.mkdir(parents=True, exist_ok=True)
+            res = _solve_step(net, step_dir, save_outputs=True)
+            if plot_hook:
+                plot_hook(f"step_{step:02d}", res, step_dir)
+            _record_step_metrics(step, net, res)
+
+            grew = sum(1 for r in result.reports if bool(getattr(r, "grew", False)))
+
+            # Early-stop checks (mirror legacy semantics).
+            if bool(params.stop_on_all_keff_below_kc):
+                hit, n_total, n_finite, kmin, kmax = _all_keff_below(result.reports)
+                if hit:
+                    print(
+                        f"[stop] all-tip K_eff below Kc at STEP_{step:02d} "
+                        f"(tips={n_finite}/{n_total}, "
+                        f"K_min={kmin*1e-6:.3e} MPa*sqrt(m), "
+                        f"K_max={kmax*1e-6:.3e} MPa*sqrt(m), "
+                        f"Kc={Kc_eff*1e-6:.3e} MPa*sqrt(m))."
+                    )
+                    terminate_tag = "all_keff_below_kc"
+                    break
+            if bool(params.stop_on_all_growth_force_zero) and grew == 0 and len(result.reports) > 0:
+                n_snapped = sum(
+                    1 for r in result.reports
+                    if str(getattr(r, "reason", "")) == "snapped_at_boundary"
+                )
+                print(
+                    f"[stop] all-tip growth_force=0 at STEP_{step:02d} "
+                    f"(tips={len(result.reports)}, snapped={n_snapped})."
+                )
+                terminate_tag = "all_growth_force_zero"
+                break
+
+            # ----- BEM correction every K steps -----
+            if bem_freq > 0 and (step % bem_freq == 0) and step < max_steps:
+                print(f"[BEM-correction] STEP_{step:02d}: firing hook", flush=True)
+                bem_correction_hook(res, step)
+                # Rebuild prop with the refreshed BEM field. Carry over the
+                # propagator's mutated snapped_vertex_ids so the next grow
+                # keeps the same boundary-snapping state.
+                applied = _build_applied_from_bem()
+                prop, evaluator = _build_prop(applied, set(prop.snapped_vertex_ids))
+    except KeyboardInterrupt:
+        print("[interrupt] KeyboardInterrupt received; persisting partial outputs.")
+        raise
+    finally:
+        if res is not None:
+            setattr(res, "snapped_vertex_ids", set(prop.snapped_vertex_ids))
+            setattr(res, "stopped_reason", str(terminate_tag))
+            setattr(res, "step_history", list(step_history))
+
+    return res

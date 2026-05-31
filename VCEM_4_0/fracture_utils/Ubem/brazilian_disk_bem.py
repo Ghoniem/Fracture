@@ -63,6 +63,46 @@ class BrazilianDiskParams:
     n_grid: int = 120
     pad_frac: float = 0.03
 
+    # boundary node distribution on the outer circle:
+    #   'uniform'  -- equal arc-length spacing (the historical default)
+    #   'clustered'-- node density peaks at the loading platens (+/-90 deg)
+    #                 and tapers toward the equator. Concentration controls
+    #                 peak-to-baseline density ratio; taper_exponent
+    #                 controls how sharply the density returns to baseline.
+    boundary_mesh: str = "uniform"
+    boundary_concentration: float = 8.0
+    boundary_taper_exponent: float = 4.0
+
+
+def build_disk_boundary(params: "BrazilianDiskParams"):
+    """Build the outer-circle boundary mesh for a Brazilian disk.
+
+    Switches between uniform and clustered (graded) node distributions
+    based on ``params.boundary_mesh``. Clustered mode concentrates nodes
+    at +/-90 deg (the loading platens) with peak density set by
+    ``params.boundary_concentration`` and taper rate set by
+    ``params.boundary_taper_exponent``.
+    """
+    kind = str(getattr(params, "boundary_mesh", "uniform")).lower().strip()
+    if kind in ("clustered", "graded", "circle_graded"):
+        spec = {
+            "type": "circle_graded",
+            "R": float(params.R),
+            "n_boundary": int(params.n_boundary_elements),
+            "center": (0.0, 0.0),
+            "focal_angles_deg": [90.0, -90.0],
+            "concentration": float(getattr(params, "boundary_concentration", 8.0)),
+            "taper_exponent": float(getattr(params, "boundary_taper_exponent", 4.0)),
+        }
+    else:
+        spec = {
+            "type": "circle",
+            "R": float(params.R),
+            "n_boundary": int(params.n_boundary_elements),
+            "center": (0.0, 0.0),
+        }
+    return build_boundary(spec)
+
 
 def load_bem_field(bem_dir: Path) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     bem_dir = Path(bem_dir)
@@ -102,8 +142,8 @@ def compute_bem_brazilian_disk_field(
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1) Build boundary
-    mesh = build_boundary({"type": "circle", "R": params.R, "n_boundary": params.n_boundary_elements, "center": (0.0, 0.0)})
+    # 1) Build boundary (uniform or clustered per params.boundary_mesh)
+    mesh = build_disk_boundary(params)
 
     # 2) BCs: distributed normal pressure on top/bottom arcs
     theta_deg = np.asarray(mesh.theta_deg, dtype=float)

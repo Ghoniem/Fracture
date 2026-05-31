@@ -147,6 +147,16 @@ def solve_kkt_lsq_eq(K, rhs, C, d: Optional[np.ndarray] = None,
     rd = (np.ascontiguousarray(ridge_diag, dtype=float).reshape(-1)
           if ridge_diag is not None
           else np.zeros((0,), dtype=float))
+    # When K has more columns than rows (more crack DOFs than collocation
+    # rows), K^T K is rank-deficient by construction and the KKT matrix
+    # becomes numerically singular (cond ~ 1e+49 observed) even after the
+    # eps*I stabilizer. The C++ BDCSVD path segfaults on such matrices and
+    # AutoLU's PartialPivLU silently returns garbage. Fall back to the
+    # Python np.linalg.lstsq(rcond=1e-12) path which is robust under
+    # rank deficiency.
+    if K.shape[0] < K.shape[1]:
+        return _py_solve_kkt_lsq_eq(K=K, rhs=rhs, C=C, d=d,
+                                     ridge=float(ridge), ridge_diag=ridge_diag)
     return cpp.solve_kkt_lsq_eq(
         np.ascontiguousarray(K, dtype=float),
         np.ascontiguousarray(rhs, dtype=float).reshape(-1),
