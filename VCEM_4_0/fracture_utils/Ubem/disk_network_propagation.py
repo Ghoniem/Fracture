@@ -13,6 +13,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, Iterable, Optional, Any, Tuple
+import json
+import subprocess
+import sys
+import time
 import numpy as np
 
 
@@ -121,6 +125,20 @@ class CrackGrowthParams:
     # runner sets res.stopped_reason = "all_growth_force_zero" so the
     # outer-coupling driver can break its own loop.
     stop_on_all_growth_force_zero: bool = True
+
+    # Wall-clock runtime limit (seconds). When set, the STEP loop breaks
+    # before starting any step that would push the cumulative run time past
+    # this threshold; the finalize path then writes step_history.json,
+    # plot_step_metrics outputs, and (if enabled) the metric videos before
+    # returning. None disables the check.
+    runtime_limit_s: Optional[float] = None
+
+    # Auto-encode per-cycle PNGs into MP4s on finalize via
+    # tools/make_run_videos.py (subprocessed with the running interpreter).
+    # Disable to skip the video step (e.g. on machines without ffmpeg /
+    # imageio).
+    enable_video_encode: bool = True
+    video_fps: int = 4
 
 
 # ============================================================
@@ -1035,6 +1053,79 @@ def run_growth_steps(
     # Per-STEP metrics: alpha/Q/P_infty/L_total_m + per-tip KI/KII.
     step_history: list = []
 
+    # Wall-clock start for runtime-limit checks; finalize bookkeeping.
+    _t_start = time.monotonic()
+    _runtime_limit = (float(params.runtime_limit_s)
+                      if getattr(params, "runtime_limit_s", None) is not None
+                      else None)
+
+    def _persist_step_history_json():
+        """Write step_history to out_dir/step_history.json (idempotent).
+
+        Called after every _record_step_metrics append so an interrupted run
+        leaves the metric data on disk; plot_step_metrics can then be re-run
+        from disk without the live res object.
+        """
+        try:
+            payload = {
+                "step_history": list(step_history),
+                "n_steps": len(step_history),
+                "runtime_s": float(time.monotonic() - _t_start),
+            }
+            with (out_dir / "step_history.json").open("w") as fh:
+                json.dump(payload, fh, indent=2, default=float)
+        except Exception as _e:
+            print(f"[step-history] persist failed: {_e}")
+
+    def _encode_videos_subprocess():
+        """Invoke tools/make_run_videos.py on out_dir via subprocess.
+
+        Uses the running interpreter (sys.executable) so the conda env's
+        imageio + PIL are picked up. Failures are logged and swallowed so
+        finalize never aborts on the video step.
+        """
+        here = Path(__file__).resolve()
+        script = None
+        for cand in (here.parents[3] / "tools" / "make_run_videos.py",
+                     here.parents[2] / "tools" / "make_run_videos.py"):
+            if cand.exists():
+                script = cand
+                break
+        if script is None:
+            print("[finalize] tools/make_run_videos.py not found; skipping videos")
+            return
+        try:
+            print(f"[finalize] encoding videos via {script.name} (fps={params.video_fps})")
+            subprocess.run(
+                [sys.executable, str(script), str(out_dir),
+                 "--fps", str(int(params.video_fps))],
+                check=False,
+            )
+        except Exception as _e:
+            print(f"[finalize] video encode failed: {_e}")
+
+    def _finalize_run(reason: str):
+        """Persist step_history, generate metrics plots, encode videos.
+
+        Always runs from the outer try/finally so it executes on success,
+        on graceful KeyboardInterrupt, and on runtime-limit timeout. The
+        nonlocal terminate_tag is set only if no earlier criterion fired.
+        """
+        nonlocal terminate_tag
+        if not terminate_tag and reason:
+            terminate_tag = reason
+        _persist_step_history_json()
+        if step_history:
+            try:
+                from fracture_utils.Ubem.disk_crack_plotting import plot_step_metrics
+                plot_step_metrics(step_history, out_dir)
+            except Exception as _e:
+                print(f"[finalize] plot_step_metrics failed: {_e}")
+        else:
+            print("[finalize] step_history empty; skipping plot_step_metrics")
+        if bool(getattr(params, "enable_video_encode", True)):
+            _encode_videos_subprocess()
+
     # ----- 1) Initial network + optional simplification ----------------
     net = CrackNetworkV4.from_vertices_connectivity(
         vertices=np.asarray(vertices, float),
@@ -1233,6 +1324,7 @@ def run_growth_steps(
             "L_total_m": float(topo.get("L_total_m", float("nan"))),
             "tips": tips_out,
         })
+        _persist_step_history_json()
 
     # ----- 3) Per-step solve + save helper ------------------------------
     def _solve_step(network, step_dir, *, save_outputs: bool):
@@ -1293,6 +1385,15 @@ def run_growth_steps(
     # ----- 6) STEP_01..STEP_<max_steps> ---------------------------------
     try:
         for step in range(1, max_steps + 1):
+            if _runtime_limit is not None:
+                elapsed = float(time.monotonic() - _t_start)
+                if elapsed >= _runtime_limit:
+                    print(
+                        f"[stop] runtime limit {_runtime_limit:.1f}s reached at "
+                        f"STEP_{step:02d} (elapsed={elapsed:.1f}s); finalizing."
+                    )
+                    terminate_tag = "runtime_limit"
+                    break
             print(f"\n[STEP] {step}/{max_steps}", flush=True)
             net_before = net
             result = prop.grow_one_increment(net_before)
@@ -1348,9 +1449,14 @@ def run_growth_steps(
                 applied = _build_applied_from_bem()
                 prop, evaluator = _build_prop(applied, set(prop.snapped_vertex_ids))
     except KeyboardInterrupt:
-        print("[interrupt] KeyboardInterrupt received; persisting partial outputs.")
-        raise
+        # Graceful interrupt: do NOT re-raise. The finally block below
+        # runs the full finalize path (step_history.json + metrics plots
+        # + videos) so a Ctrl+C mid-run leaves a complete recoverable
+        # artifact bundle on disk.
+        print("[interrupt] KeyboardInterrupt received; finalizing gracefully.")
+        terminate_tag = "keyboard_interrupt"
     finally:
+        _finalize_run(reason=terminate_tag or "completed")
         if res is not None:
             setattr(res, "snapped_vertex_ids", set(prop.snapped_vertex_ids))
             setattr(res, "stopped_reason", str(terminate_tag))
