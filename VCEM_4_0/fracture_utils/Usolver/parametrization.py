@@ -53,6 +53,15 @@ from .parametrization_preprocess import (
 
 from .parametrization_cod import enforce_cod_nonnegative_active_set
 
+from .isolation import (
+    classify_active_polylines,
+    build_dof_masks,
+    scatter_q,
+    drop_zero_rows,
+    compute_isolated_analytical_densities,
+)
+import warnings
+
 
 class DCENetworkStaticV4:
     def __init__(self, material: Material, network: CrackNetworkV4, applied: AppliedStress):
@@ -151,6 +160,63 @@ class DCENetworkStaticV4:
             poly_panels, deg, crack_mode=crack_mode, junction_model=junction_model
         )
 
+        # ------------------------------------------------------------
+        # Sub-critical isolated-crack deactivation.
+        # When isolated_activation_K_Ic is set, drop the DOFs of any
+        # isolated polyline (both endpoints deg-1) whose estimated tip
+        # K_eff is below safety * K_Ic. The polyline keeps its geometry
+        # and its analytical Westergaard COD is filled into q_full so its
+        # stress-field perturbation is preserved; it just does not
+        # participate in the global KKT coupling. Reactivates
+        # automatically next cycle when topology links it in.
+        #
+        # Hysteresis: pass safety as (lo, hi) plus prev_state for
+        # deactivate-low / activate-high behavior, keyed by the unordered
+        # endpoint pair frozenset({v_start, v_end}).
+        # ------------------------------------------------------------
+        K_Ic_iso = _ignored.get("isolated_activation_K_Ic", None)
+        safety_iso = _ignored.get("isolated_activation_safety", 1.0)
+        prev_state_iso = _ignored.get("isolated_activation_prev_state", None)
+        fill_analytical = bool(_ignored.get("isolated_activation_fill_analytical", True))
+        enforce_cod_flag = bool(
+            _ignored.get("enforce_cod_nonnegative", False)
+            or _ignored.get("enforce_cod_positive", False)
+        )
+        if K_Ic_iso is not None and crack_mode == "half" and enforce_cod_flag:
+            warnings.warn(
+                "isolated_activation_K_Ic is ignored when enforce_cod_nonnegative "
+                "is active (the active-set solver expects full-size DOF vectors).",
+                RuntimeWarning, stacklevel=2,
+            )
+            active_polylines = [True] * len(poly_panels)
+            state_iso: dict = {}
+        else:
+            active_polylines, state_iso = classify_active_polylines(
+                poly_panels=poly_panels, deg=deg, applied=self.applied,
+                K_Ic=K_Ic_iso, safety=safety_iso,
+                network=self.network, prev_state=prev_state_iso,
+            )
+        n_inactive_polylines = sum(1 for a in active_polylines if not a)
+        inactive_pids = [pid for pid, a in enumerate(active_polylines) if not a]
+        if n_inactive_polylines > 0:
+            row_mask, col_mask = build_dof_masks(
+                poly_panels=poly_panels, offsets=offsets, nunk=nunk,
+                active_polylines=active_polylines,
+            )
+            n_q = int(col_mask.sum())
+            if fill_analytical:
+                analytical_densities = compute_isolated_analytical_densities(
+                    poly_panels=poly_panels,
+                    active_polylines=active_polylines,
+                    applied=self.applied, material=self.material,
+                )
+            else:
+                analytical_densities = {}
+        else:
+            row_mask = col_mask = None
+            n_q = int(nunk)
+            analytical_densities = {}
+
         # Engine dispatch: route assemblers + KKT solves through the C++
         # extension when _ignored["engine"]="cpp". Default "python" preserves
         # historical behaviour exactly.
@@ -165,6 +231,10 @@ class DCENetworkStaticV4:
             nq_col=int(nq_col),
             engine=engine,
         )
+
+        if row_mask is not None:
+            K = K[row_mask][:, col_mask]
+            rhs = rhs[row_mask]
 
         # ------------------------------------------------------------
         # Constraints
@@ -191,6 +261,18 @@ class DCENetworkStaticV4:
                 theta_min_flat=theta_min_flat,
                 soft_eta=soft_eta,
             )
+
+        # Filter constraints to active DOFs. Rows that reference only
+        # inactive polylines collapse to identically zero after column
+        # masking; drop them so they don't waste compress-SVD work and
+        # don't enforce vacuous 0 = 0 equalities.
+        if col_mask is not None:
+            if C is not None and C.size:
+                C = C[:, col_mask]
+                C, _ = drop_zero_rows(C, None)
+            if P is not None and P.size:
+                P = P[:, col_mask]
+                P, _ = drop_zero_rows(P, None)
 
         # ------------------------------------------------------------
         # Soft coupling (half+soft): add sqrt(eta) P q ≈ 0 as LS rows
@@ -233,7 +315,15 @@ class DCENetworkStaticV4:
             C = C_used
         else:
             if augmented_coupling is None:
-                q = _dispatch.solve_kkt_lsq(K, rhs, C, ridge=float(ridge), engine=engine)
+                q_active = _dispatch.solve_kkt_lsq(K, rhs, C, ridge=float(ridge), engine=engine)
+                if col_mask is not None or analytical_densities:
+                    q = scatter_q(
+                        q_active, col_mask, int(nunk),
+                        poly_panels=poly_panels, offsets=offsets,
+                        analytical_densities=analytical_densities,
+                    )
+                else:
+                    q = q_active
             else:
                 ctype = str(augmented_coupling.get("type", "")).lower().strip()
                 if ctype != "bem_traction_only":
@@ -290,8 +380,16 @@ class DCENetworkStaticV4:
                     engine=engine,
                 )
 
+                # Apply isolation masks: Mu/Mt have q-columns, Nbc has
+                # crack-collocation rows. K/rhs were already filtered above.
+                if col_mask is not None:
+                    Mu = Mu[:, col_mask]
+                    Mt = Mt[:, col_mask]
+                if row_mask is not None:
+                    Nbc = Nbc[row_mask, :]
+
                 ny = int(C_bem.shape[1])
-                n_total = int(nunk) + ny
+                n_total = n_q + ny
 
                 # Monolithic crack equilibrium residual:
                 #   K q + N y ~= rhs
@@ -303,7 +401,7 @@ class DCENetworkStaticV4:
 
                 # New coupling constraints:
                 # 1) BEM equation: C_bem y = 0
-                C1 = np.hstack([np.zeros((C_bem.shape[0], int(nunk)), float), C_bem])
+                C1 = np.hstack([np.zeros((C_bem.shape[0], n_q), float), C_bem])
                 d1 = np.zeros((C1.shape[0],), float)
 
                 # 2) Boundary compatibility with split selectors:
@@ -397,9 +495,9 @@ class DCENetworkStaticV4:
                     ridge_y = 1e-12
                 rd = np.zeros((n_total,), float)
                 if ridge_q > 0:
-                    rd[: int(nunk)] = ridge_q
+                    rd[: n_q] = ridge_q
                 if ridge_y > 0:
-                    rd[int(nunk):] = ridge_y
+                    rd[n_q:] = ridge_y
 
                 # Optional strict monolithic coupling:
                 # enforce crack equilibrium rows as hard equalities
@@ -434,8 +532,8 @@ class DCENetworkStaticV4:
                 if (not np.isfinite(E0)) or E0 <= 0.0:
                     E0 = 1.0
                 if use_phys and ny == 4 * nb_loc and nb_loc > 0:
-                    D_phys[int(nunk): int(nunk) + 2 * nb_loc] = L0
-                    D_phys[int(nunk) + 2 * nb_loc: int(nunk) + 4 * nb_loc] = E0
+                    D_phys[n_q: n_q + 2 * nb_loc] = L0
+                    D_phys[n_q + 2 * nb_loc: n_q + 4 * nb_loc] = E0
 
                 Kp = Kz_obj * D_phys[None, :]
                 Cp = C_all * D_phys[None, :]
@@ -512,8 +610,16 @@ class DCENetworkStaticV4:
                         ridge_diag=rd_hat,
                     )
                     z = D_phys * z_hat
-                q = z[: int(nunk)]
-                y_aug = z[int(nunk):].copy()
+                q_active = z[: n_q]
+                if col_mask is not None or analytical_densities:
+                    q = scatter_q(
+                        q_active, col_mask, int(nunk),
+                        poly_panels=poly_panels, offsets=offsets,
+                        analytical_densities=analytical_densities,
+                    )
+                else:
+                    q = q_active
+                y_aug = z[n_q:].copy()
                 coupling_meta = dict(
                     augmented=True,
                     augmented_type=ctype,
@@ -621,5 +727,20 @@ class DCENetworkStaticV4:
             meta=dict(nq_stress=int(nq_stress), ridge=float(ridge), ndof=int(nunk)),
             constraints=dict(n_constraints=int(C.shape[0]), junction_model=junction_model, soft_eta=float(soft_eta)),
             coupling=coupling_meta,
+            isolation=dict(
+                enabled=(K_Ic_iso is not None),
+                K_Ic=(None if K_Ic_iso is None or callable(K_Ic_iso) or hasattr(K_Ic_iso, "Kc")
+                      else float(K_Ic_iso)),
+                safety=(tuple(float(s) for s in safety_iso)
+                        if isinstance(safety_iso, (tuple, list)) else float(safety_iso)),
+                analytical_fill=bool(fill_analytical),
+                n_active_polylines=int(sum(1 for a in active_polylines if a)),
+                n_inactive_polylines=int(n_inactive_polylines),
+                inactive_pids=list(int(p) for p in inactive_pids),
+                active_polylines=list(bool(a) for a in active_polylines),
+                n_active_dofs=int(n_q),
+                n_total_dofs=int(nunk),
+                state=dict(state_iso),
+            ),
         )
         return sol
