@@ -120,6 +120,144 @@ class DCEPlotterV4:
         save_fig(fig, self.out_dir, "network_graph", dpi=150)
         return fig
 
+    def plot_network_graph_connectivity(
+        self,
+        units: str = "mm",
+        *,
+        disk_radius: Optional[float] = None,
+        font_size: int = 16,
+        boundary_tol_m: float = 1.0e-6,
+        offset_frac: float = 0.01,
+    ):
+        """Connectivity view of the crack network.
+
+        Same vertex/edge data as ``plot_network_graph`` but with:
+          - no vertex scatter dots,
+          - each connected component colored uniformly (one color per
+            component) so fragments are visually distinct,
+          - disk boundary circle drawn when ``disk_radius`` is provided
+            (mirrors the deformed-network plot),
+          - any component that touches >=2 disk-boundary vertices
+            (a spanning cluster) drawn as a double line offset
+            perpendicular by ``offset_frac * disk_radius`` (default 1%)
+            to highlight fragmentation.
+
+        Boundary vertices are detected via radial proximity to
+        ``disk_radius`` (within ``boundary_tol_m``) plus any vertex ids
+        attached to ``self.res.snapped_vertex_ids`` (carried by the
+        propagator). Spanning-cluster identification uses
+        ``Ugenerator.spanning_cluster.find_spanning_clusters``.
+        """
+        from ..Ugenerator.spanning_cluster import find_spanning_clusters
+
+        V = self.calc.network.vertices
+        E = self.calc.network.edges
+        s = 1e3 if units.lower() == "mm" else 1.0
+
+        vmap = {int(v.id): v for v in V}
+
+        # Connected-component labeling via BFS over the vertex graph.
+        adj: Dict[int, list] = {int(v.id): [] for v in V}
+        for e in E:
+            adj[int(e.v0)].append(int(e.v1))
+            adj[int(e.v1)].append(int(e.v0))
+        comp_of: Dict[int, int] = {}
+        next_label = 0
+        for seed in adj:
+            if seed in comp_of:
+                continue
+            stack = [seed]
+            while stack:
+                v_id = stack.pop()
+                if v_id in comp_of:
+                    continue
+                comp_of[v_id] = next_label
+                stack.extend(adj[v_id])
+            next_label += 1
+        n_comp = next_label
+
+        # Spanning-cluster detection (any component with >=2 boundary vertices).
+        spanning_vid_sets: list = []
+        if disk_radius is not None and float(disk_radius) > 0.0:
+            snapped_ids = getattr(self.res, "snapped_vertex_ids", None)
+            try:
+                spans = find_spanning_clusters(
+                    self.calc.network, float(disk_radius),
+                    snapped_vertex_ids=snapped_ids,
+                    boundary_tol_m=float(boundary_tol_m),
+                )
+                spanning_vid_sets = [comp for (comp, _bvids) in spans]
+            except Exception:
+                spanning_vid_sets = []
+
+        def _edge_is_spanning(v0_id: int, v1_id: int) -> bool:
+            for comp_set in spanning_vid_sets:
+                if v0_id in comp_set and v1_id in comp_set:
+                    return True
+            return False
+
+        fig, ax = plt.subplots(figsize=(7, 7))
+
+        colors = plt.rcParams["axes.prop_cycle"].by_key().get("color", []) or [
+            "C0", "C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9",
+        ]
+
+        # Perpendicular offset distance for double lines on spanning edges.
+        delta_plot = 0.0
+        if disk_radius is not None and float(disk_radius) > 0.0:
+            delta_plot = float(offset_frac) * float(disk_radius) * s
+
+        for e in E:
+            v0 = vmap[int(e.v0)]
+            v1 = vmap[int(e.v1)]
+            x0, y0 = v0.x * s, v0.y * s
+            x1, y1 = v1.x * s, v1.y * s
+            col = colors[comp_of[int(e.v0)] % len(colors)]
+
+            if delta_plot > 0.0 and _edge_is_spanning(int(e.v0), int(e.v1)):
+                dx, dy = x1 - x0, y1 - y0
+                L = max(math.hypot(dx, dy), 1e-12)
+                px, py = -dy / L, dx / L
+                ox, oy = 0.5 * delta_plot * px, 0.5 * delta_plot * py
+                ax.plot([x0 + ox, x1 + ox], [y0 + oy, y1 + oy],
+                        color=col, lw=2.0, solid_capstyle="round")
+                ax.plot([x0 - ox, x1 - ox], [y0 - oy, y1 - oy],
+                        color=col, lw=2.0, solid_capstyle="round")
+            else:
+                ax.plot([x0, x1], [y0, y1], color=col, lw=2.0,
+                        solid_capstyle="round")
+
+        # Disk boundary circle.
+        if disk_radius is not None and float(disk_radius) > 0.0:
+            R_plot = float(disk_radius) * s
+            if np.isfinite(R_plot) and R_plot > 0.0:
+                theta = np.linspace(0.0, 2.0 * np.pi, 361)
+                ax.plot(R_plot * np.cos(theta), R_plot * np.sin(theta),
+                        color="0.4", lw=1.0, alpha=0.8, zorder=1)
+                pad = 0.04 * R_plot
+                x0, x1 = ax.get_xlim()
+                y0, y1 = ax.get_ylim()
+                ax.set_xlim(min(x0, -R_plot - pad), max(x1, R_plot + pad))
+                ax.set_ylim(min(y0, -R_plot - pad), max(y1, R_plot + pad))
+
+        ax.set_xlabel(f"x [{units}]", fontsize=font_size)
+        ax.set_ylabel(f"y [{units}]", fontsize=font_size)
+        ax.tick_params(axis="both", which="major", labelsize=font_size)
+        ax.set_aspect("equal", adjustable="box")
+        ax.grid(True, alpha=0.25)
+
+        suffix = ""
+        if spanning_vid_sets:
+            suffix = f" - {len(spanning_vid_sets)} spanning"
+        ax.set_title(
+            f"Network connectivity ({n_comp} component"
+            f"{'s' if n_comp != 1 else ''}{suffix})",
+            fontsize=max(10, font_size - 2),
+        )
+
+        save_fig(fig, self.out_dir, "network_graph_connectivity", dpi=150)
+        return fig
+
     def plot_deformed_network(
         self,
         n_theta: int = 4000,

@@ -299,26 +299,34 @@ def load_case(xlsx_path: str | Path) -> CaseConfig:
     # ----- CrackGrowthParams (subset; rest stays at dataclass defaults) -
     # disk_radius_m is injected from disk.R so the disk-radius step
     # (Δa_ref = f_disk_radius * R) is active in NetworkGrowthRunner.
-    # crack_growth.max_cycles in the Excel sheet is the user-facing "inner
-    # cycles" knob -- the total number of growth steps per outer-coupling
-    # cycle. It maps to max_inner_cycles_per_outer (caps the while-True
-    # growth loop). The internal max_cycles (simplify-checkpoint outer-
-    # growth loop) is pinned to 1 so a single simplify checkpoint runs
-    # after the capped growth loop completes.
+    # crack_growth.Kc is the fracture toughness [Pa*sqrt(m)]; the legacy
+    # workbook key was crack_growth.Kc_demo and is still accepted as a
+    # fallback so pre-rename workbooks keep loading.
+    #
+    # crack_growth.max_cycles was the user-facing "inner cycles" knob for
+    # the legacy outer x inner pipeline (maps to max_inner_cycles_per_outer).
+    # The new STEP-based driver ignores it; the row was dropped from the
+    # workbook template but a value is still consumed when present so old
+    # workbooks continue to load.
+    #
     # New simplifier knobs are read with `.get(...)` and dataclass defaults
     # as fallback so existing workbooks (built before these rows were added
     # to _build_template.py) continue to load. Once the workbook is
     # regenerated, the Excel-supplied value takes precedence.
     _simp_defaults = CrackGrowthParams()
+    _legacy_inner = cfg.get("crack_growth.max_cycles", None)
+    _kc = cfg.get("crack_growth.Kc",
+                  cfg.get("crack_growth.Kc_demo", _simp_defaults.Kc))
     crack_growth = CrackGrowthParams(
         max_cycles=1,
-        max_inner_cycles_per_outer=_as_int(_require(cfg, "crack_growth.max_cycles", cfg_sheet)),
+        max_inner_cycles_per_outer=(_as_int(_legacy_inner)
+                                    if _legacy_inner is not None else None),
         L_limit_mm=_as_float(_require(cfg, "crack_growth.L_limit_mm", cfg_sheet)),
         vertex_high=_as_int(_require(cfg, "crack_growth.vertex_high", cfg_sheet)),
         f_disk_radius=_as_float(_require(cfg, "crack_growth.f_disk_radius", cfg_sheet)),
         disk_radius_m=disk.R,
         simultaneous_tip_growth=_as_bool(_require(cfg, "crack_growth.simultaneous_tip_growth", cfg_sheet)),
-        Kc_demo=_as_float(_require(cfg, "crack_growth.Kc_demo", cfg_sheet)),
+        Kc=_as_float(_kc),
         rmax_frac=_as_float(_require(cfg, "crack_growth.rmax_frac", cfg_sheet)),
         min_pts=_as_int(_require(cfg, "crack_growth.min_pts", cfg_sheet)),
         simplify_each_step=_as_bool(_require(cfg, "crack_growth.simplify_each_step", cfg_sheet)),
@@ -353,7 +361,11 @@ def load_case(xlsx_path: str | Path) -> CaseConfig:
         coupling_method=_as_str(_require(cfg, "coupling_method", cfg_sheet)).lower(),
         max_steps=_max_steps,
         bem_correction_frequency=_bem_freq,
-        outer_cycles=_as_int(_require(cfg, "outer_cycles", cfg_sheet)),
+        # outer_cycles is dead weight under the STEP-based driver (the loop
+        # uses max_steps directly). Default to 1 so post-rebuild workbooks
+        # that omit the row still load; legacy workbooks that still carry
+        # the row pass their value through.
+        outer_cycles=_as_int(cfg.get("outer_cycles", 1)),
         dry_run=_as_bool(_require(cfg, "dry_run", cfg_sheet)),
         skip_bem_solve=_as_bool(_require(cfg, "skip_bem_solve", cfg_sheet)),
         output_dir_name=_as_str(_require(cfg, "output_dir_name", cfg_sheet)),

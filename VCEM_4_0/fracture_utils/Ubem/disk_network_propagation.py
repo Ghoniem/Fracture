@@ -45,7 +45,7 @@ class CrackGrowthParams:
     step_mode: str = "fixed_step"
     simultaneous_tip_growth: bool = True
 
-    Kc_demo: float = 1e6
+    Kc: float = 1e6
     rmax_frac: float = 0.25
     min_pts: int = 8
 
@@ -396,8 +396,12 @@ def run_network_growth_uncoupled(
         solver_kwargs.update(params.solver_kwargs)
 
     # Allow toughness override via solver_kwargs while keeping solve(**solver_kwargs)
-    # clean from non-solver keys.
-    Kc_from_kwargs = solver_kwargs.pop("Kc_demo", None)
+    # clean from non-solver keys. Accept new "Kc" (preferred) and the legacy
+    # "Kc_demo" / "K_demo" aliases so old configs keep loading.
+    Kc_from_kwargs = solver_kwargs.pop("Kc", None)
+    _legacy = solver_kwargs.pop("Kc_demo", None)
+    if Kc_from_kwargs is None:
+        Kc_from_kwargs = _legacy
     _ = solver_kwargs.pop("K_demo", None)  # legacy alias; not used by propagation logic
 
     # In true augmented coupling mode, the outer boundary load is enforced via
@@ -420,7 +424,7 @@ def run_network_growth_uncoupled(
         disk_radius_m=float(params.disk_radius_m) if params.disk_radius_m is not None else 0.0,
     )
 
-    Kc_eff = float(params.Kc_demo if Kc_from_kwargs is None else Kc_from_kwargs)
+    Kc_eff = float(params.Kc if Kc_from_kwargs is None else Kc_from_kwargs)
     tough = ConstantToughness(Kc_eff)
     dir_law = MaximumHoopStressLaw()
 
@@ -1173,9 +1177,14 @@ def run_growth_steps(
     )
     if isinstance(params.solver_kwargs, dict):
         base_solver_kwargs.update(params.solver_kwargs)
-    Kc_from_kwargs = base_solver_kwargs.pop("Kc_demo", None)
+    # Toughness override via solver_kwargs: new "Kc" key wins; "Kc_demo" /
+    # "K_demo" remain as legacy aliases for older configs.
+    Kc_from_kwargs = base_solver_kwargs.pop("Kc", None)
+    _legacy = base_solver_kwargs.pop("Kc_demo", None)
+    if Kc_from_kwargs is None:
+        Kc_from_kwargs = _legacy
     _ = base_solver_kwargs.pop("K_demo", None)
-    Kc_eff = float(params.Kc_demo if Kc_from_kwargs is None else Kc_from_kwargs)
+    Kc_eff = float(params.Kc if Kc_from_kwargs is None else Kc_from_kwargs)
     tough = ConstantToughness(Kc_eff)
     dir_law = MaximumHoopStressLaw()
     prop_cfg = PropagationConfig(
@@ -1335,6 +1344,11 @@ def run_growth_steps(
         if save_outputs:
             pl = DCEPlotterV4(res, out_dir=step_dir)
             _call(pl, "plot_network_graph")
+            _call(
+                pl, "plot_network_graph_connectivity",
+                disk_radius=(float(params.disk_radius_m)
+                             if params.disk_radius_m is not None else None),
+            )
             pl_def = DCEPlotterDeformedV4(res, out_dir=step_dir)
             _call(
                 pl_def, "plot_deformed_network",

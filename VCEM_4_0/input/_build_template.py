@@ -19,9 +19,9 @@ sheets that ``excel_io.load_case`` understands:
   * CONFIGURATION_LOGIC  -- non-numerical run-mode knobs (booleans + string
                             choices: engine, coupling_method, parametrization,
                             d_mode, cmap, output_dir_name, ...).
-  * CONFIGURATION_PARAM  -- numerical knobs (ints + floats: outer_cycles,
-                            crack-growth lengths/angles, augmented ridges,
-                            plot DPI / level counts, ...).
+  * CONFIGURATION_PARAM  -- numerical knobs (ints + floats: crack-growth
+                            lengths/angles/Kc, augmented ridges, plot DPI /
+                            level counts, ...).
 
 Re-run this script after defaults change in the underlying dataclasses;
 hand edits to the .xlsx will be overwritten.
@@ -179,20 +179,14 @@ CFG_LOGIC_ROWS = [
 # --------------------------------------------- CONFIGURATION_PARAM
 # Numerical knobs only: ints + floats.
 CFG_PARAM_ROWS = [
-    # ----- run mode --------------------------------------------------
-    ("outer_cycles",                          2,             "Number of outer coupling cycles",
-        INT),
-
     # ----- crack growth (numeric subset of CrackGrowthParams) -------
-    ("crack_growth.max_cycles",               5,             "Number of growth steps per outer coupling cycle (caps the inner growth loop)",
-        INT),
     ("crack_growth.L_limit_mm",               20.0,          "Max total network length [mm]",
         FLOAT),
     ("crack_growth.vertex_high",              18,            "Max vertex id reserved (network growth cap)",
         INT),
     ("crack_growth.f_disk_radius",            0.05,          "Growth step size as fraction of disk radius (Δa_ref = f_disk_radius × R, constant in absolute terms)",
         FLOAT),
-    ("crack_growth.Kc_demo",                  1e6,           "Demo fracture toughness [Pa*sqrt(m)]",
+    ("crack_growth.Kc",                       1e6,           "Fracture toughness [Pa*sqrt(m)]",
         FLOAT),
     ("crack_growth.rmax_frac",                0.25,          "Max growth radius / current length fraction",
         FLOAT),
