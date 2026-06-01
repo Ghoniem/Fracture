@@ -1,0 +1,571 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{bm}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage[numbers,sort&compress]{natbib}
+\usepackage[colorlinks=true,linkcolor=blue,citecolor=teal,urlcolor=blue]{hyperref}
+
+\newcommand{\Bvec}{\mathbf{b}}
+\newcommand{\nvec}{\mathbf{n}}
+\newcommand{\xvec}{\mathbf{x}}
+\newcommand{\uvec}{\mathbf{u}}
+\newcommand{\tvec}{\mathbf{t}}
+\newcommand{\bdry}{\Gamma}
+\newcommand{\dom}{\Omega}
+\newcommand{\epspl}{\bm{\varepsilon}^{\mathrm{p}}}
+\newcommand{\epsstar}{\bm{\varepsilon}^{*}}
+\newcommand{\sig}{\bm{\sigma}}
+\newcommand{\eps}{\bm{\varepsilon}}
+\newcommand{\Cstiff}{\mathbb{C}}
+\newcommand{\half}{\tfrac{1}{2}}
+
+\title{\textbf{Modelling Plastic Deformation in VCEM:\\
+A Plan for Two Tungsten Fracture Problems}}
+\author{N.\ M.\ Ghoniem \\ \small Mechanical \& Aerospace Engineering, UCLA}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This note proposes the most efficient routes to introduce plastic deformation
+into \texttt{VCEM} (the dislocation-based, boundary-element fracture code in
+\texttt{VCEM\_4\_0/}) for two target problems:
+(1)~a constrained, thermally shocked disk whose residual plastic strain drives
+\emph{brittle} fracture on cool-down, and
+(2)~a 2D polycrystal whose grain-boundary (GB) sliding generates internal
+stresses, and whose crack tips carry an explicit \emph{local dislocation
+distribution} that produces crack-tip shielding --- the mechanism that controls
+the ductile-to-brittle transition (DBTT) of tungsten. Bulk crystal plasticity
+is deliberately excluded: residual/internal stresses are supplied as a
+superimposed external field, and plasticity is resolved only where it matters
+mechanically, i.e.\ in the crack-tip process zone. The recommendation exploits
+two structural facts of the existing code: cracks are already represented as
+\emph{distributions of edge dislocations} solved by a constrained-least-squares
+(KKT) coupling to a boundary-only Kelvin BEM, and the crack solver can already
+be driven by an arbitrary spatial stress field through
+\texttt{AppliedStress.sigma\_func}. A plastic strain is a dislocation density, a
+sliding GB is a displacement discontinuity, and a crack-tip plastic zone is a
+\emph{continuous distribution of dislocations} in an emergent yielded region ---
+all three map onto the same edge-dislocation kernel and the same density solve
+VCEM already has, with no discrete-dislocation particle dynamics. The central
+technical questions for Problem~2 --- \emph{how to fix the extent of the
+crack-tip zone}, and \emph{how to carry a continuous dislocation density on a
+slip-plane fan or a local tip grid} --- are addressed in
+Sec.~\ref{sec:croacktip}.
+\end{abstract}
+
+\tableofcontents
+
+% =====================================================================
+\section{What the current code provides}
+\label{sec:current}
+
+The relevant facts about \texttt{VCEM\_4\_0/}, established by code inspection:
+
+\begin{enumerate}[leftmargin=1.4em]
+\item \textbf{Boundary solver.} A 2D direct-collocation elastostatic BEM with
+Kelvin kernels $U$ (displacement) and $T$ (traction)
+(\texttt{fracture\_utils/Ubem/bem\_solver.py}, \texttt{cpp/src/bem\_solver.cpp}).
+It is \emph{boundary-only}: there is currently \emph{no} domain integral and no
+body-force / initial-strain term. Interior stresses are recovered by
+Somigliana post-processing on a grid (\texttt{stress\_on\_grid}).
+
+\item \textbf{Crack solver.} Cracks are \emph{distributions of edge
+dislocations} (a distributed-dislocation / DDM model,
+\citealp{hills1996ddt,bilby1968}). The unknowns are the differential
+Burgers-vector densities $d\Bvec(s)$ along each crack; the dislocation stress
+and displacement kernels live in \texttt{cpp/src/edge\_dislocation.cpp}. A
+constrained least-squares (``KKT'') solve
+(\texttt{cpp/src/kkt.cpp}, \texttt{crack\_assemblers.cpp}) couples the crack
+densities to the boundary BEM unknowns and enforces crack-opening-displacement
+(COD) continuity at junctions.
+
+\item \textbf{Driving field.} \texttt{AppliedStress} already accepts a spatial
+field \texttt{sigma\_func}$(\xvec)\!\to\!\sig(\xvec)$ and feeds it to the crack
+solve. The docstring states this ``enables driving an infinite-medium crack
+solve with a BEM-computed stress field without coupling.''
+
+\item \textbf{SIF and propagation.} $(K_I,K_{II})$ are extracted from a
+Peach--Koehler window force (\texttt{Uprocessor/SIF\_pk.py}); the kink direction
+uses the maximum-hoop-stress / Erdogan--Sih criterion
+\citep{erdogan_sih1963}; growth is quasi-static with a toughness interface
+(\texttt{Upropagation/toughness.py}) that already supports a \emph{spatially
+varying} $K_c(\xvec)$ via \texttt{CallableToughness}.
+
+\item \textbf{Material model.} \texttt{Material(E, nu, plane\_stress)} is linear
+isotropic elasticity only. There is no plasticity, no eigenstrain, no thermal
+strain, and no notion of grains anywhere in the tree.
+\end{enumerate}
+
+\noindent
+The two structural assets in items 2--3 are decisive: a plastic strain enters
+linear elasticity exactly as an \emph{eigenstrain} \citep{mura1987,eshelby1957},
+and an eigenstrain field is kinematically equivalent to a dislocation density.
+Because VCEM is already a superposition engine over dislocation sources plus a
+boundary-correction solve, we can add plasticity \emph{without} building a full
+domain-integral BEM in most cases.
+
+% =====================================================================
+\section{The unifying principle: plasticity as eigenstrain}
+\label{sec:eigenstrain}
+
+Decompose the total strain into elastic and inelastic parts,
+$\eps = \eps^{\mathrm e} + \epsstar$, where the eigenstrain $\epsstar$ collects
+all stress-free inelastic contributions:
+\begin{equation}
+\epsstar \;=\; \epspl \;+\; \eps^{\mathrm{th}},
+\qquad
+\eps^{\mathrm{th}} = \alpha\,\Delta T(\xvec)\,\mathbf{I},
+\label{eq:eigen-decomp}
+\end{equation}
+with $\epspl$ the plastic strain and $\eps^{\mathrm{th}}$ the thermal strain.
+The constitutive law is
+\begin{equation}
+\sig = \Cstiff : (\eps - \epsstar) = \Cstiff : \eps^{\mathrm e}.
+\label{eq:hooke-eigen}
+\end{equation}
+Mura's equivalence \citep{mura1987} states that the stress field of an
+eigenstrain $\epsstar$ in a body equals that of an equivalent body-force
+distribution $\mathbf f = -\nabla\!\cdot(\Cstiff:\epsstar)$, or equivalently a
+dislocation density
+\begin{equation}
+\bm{\alpha}_{\mathrm{disl}} = -\,\nabla\times\bm{\beta}^{\mathrm p},
+\qquad \bm{\beta}^{\mathrm p}\ \text{the plastic distortion},\ \
+\epspl=\half(\bm{\beta}^{\mathrm p}+\bm{\beta}^{\mathrm p\,\mathsf T}).
+\label{eq:disl-density}
+\end{equation}
+
+\paragraph{Finite-body residual stress by superposition (Bueckner/Erdogan).}
+For a finite domain $\dom$ with boundary $\bdry$, the residual stress from
+$\epsstar$ is obtained in two steps that reuse VCEM as-is:
+\begin{equation}
+\sig(\xvec) \;=\; \underbrace{\sig^{\infty}_{\epsstar}(\xvec)}_{\text{infinite-medium eigenstrain field}}
+\;+\;
+\underbrace{\sig^{\mathrm{corr}}(\xvec)}_{\text{BEM correction}} ,
+\label{eq:superpose}
+\end{equation}
+where $\sig^{\mathrm{corr}}$ is the elastic field that cancels the spurious
+tractions $\tvec^{\infty}_{\epsstar}=\sig^{\infty}_{\epsstar}\nvec$ left on the
+true boundary $\bdry$, i.e.\ the BEM is solved with boundary condition
+$\tvec^{\mathrm{corr}} = -\,\tvec^{\infty}_{\epsstar}$ on traction segments (and
+the matching displacement correction on displacement segments). This is exactly
+the superposition VCEM already uses to seat dislocation-based cracks inside a
+finite boundary; the eigenstrain simply contributes another set of source
+tractions. \emph{No new domain integral on the boundary solver is needed} as
+long as we can evaluate $\sig^{\infty}_{\epsstar}$ at boundary collocation and
+field points.
+
+\paragraph{When a domain integral is unavoidable.} If $\epsstar$ is genuinely
+volumetric and spread over a large fraction of $\dom$ (full-field bulk CP), the
+classical initial-strain BEM \citep{telles1983,brebbia1984,aliabadi2002} adds a
+domain term to the boundary integral equation,
+\begin{equation}
+c_{ij}u_j(\mathbf p)+\!\int_{\bdry}\!T_{ij}u_j\,d\bdry
+=\!\int_{\bdry}\!U_{ij}t_j\,d\bdry
++\int_{\dom} \! E_{ijk}\,\epsstar_{jk}\,d\dom,
+\label{eq:bie-domain}
+\end{equation}
+requiring volume cells and quadrature. This is the expensive route and we use it
+only where Sec.~\ref{sec:problem2} truly needs full-field plasticity.
+
+% =====================================================================
+\section{Problem 1 --- Thermal-shock residual strain, brittle fracture}
+\label{sec:problem1}
+
+\paragraph{Physics.} A constrained disk is heated (thermal shock), yields in
+compression where it is hottest/most constrained, then on cooling the locked-in
+plastic strain leaves a self-equilibrated \emph{residual} stress field
+$\sig^{\mathrm{res}}$. Tensile regions of $\sig^{\mathrm{res}}$ drive
+\emph{brittle} cracking. Because the material is brittle, crack growth does
+\emph{not} feed back into the plastic flow --- the coupling is strictly one-way,
+plasticity $\rightarrow$ stress $\rightarrow$ fracture.
+
+\paragraph{Recommendation: one-way eigenstrain superposition (Option 1, done
+correctly).} For a one-way brittle problem this is not a shortcut --- it is
+exact. The plan:
+\begin{enumerate}[leftmargin=1.4em]
+\item Obtain the residual eigenstrain field $\epsstar(\xvec)=\epspl+\alpha\Delta T$.
+  Two interchangeable sources:
+  \begin{itemize}[leftmargin=1.2em]
+  \item \textbf{(1a) Import from COMSOL.} Run the thermo-elasto-plastic
+    transient of the constrained disk in COMSOL, export $\sig^{\mathrm{res}}(\xvec)$
+    (or $\epspl(\xvec)$) on a mesh, and wrap a SciPy interpolant as
+    \texttt{sigma\_func}. Lowest effort; leverages a validated FE plasticity
+    solver. The exported field already contains the finite-body boundary
+    reactions, so Eq.~\eqref{eq:superpose} reduces to a direct hand-off.
+  \item \textbf{(1b) In-house thermal-shock model.} A self-contained transient
+    thermo-elasto-plastic solver built on VCEM's own dislocation/initial-strain
+    machinery, removing the COMSOL dependency. Developed in full in
+    Sec.~\ref{sec:inhouse}.
+  \end{itemize}
+\item Form the driving field by Eq.~\eqref{eq:superpose}: if using (1b) on an
+  infinite-medium basis, let VCEM's BEM compute $\sig^{\mathrm{corr}}$ to satisfy
+  the disk's true (traction-free or constrained) boundary; if using (1a) on the
+  actual disk geometry, pass $\sig^{\mathrm{res}}$ straight through.
+\item Run the existing brittle propagation: feed $\sig^{\mathrm{res}}$ via
+  \texttt{AppliedStress.sigma\_func}; nucleate/extend cracks with the existing
+  $(K_I,K_{II})$ + Erdogan--Sih + $K_c$ machinery. Tungsten cleavage anisotropy,
+  if desired, enters through a spatially/orientationally varying $K_c(\xvec)$ in
+  \texttt{CallableToughness}.
+\end{enumerate}
+
+\paragraph{Effort and risk.} Low. Path (1a) is essentially a config/IO task on
+top of capabilities the code already exposes; path (1b) adds one self-contained
+$\sim$200--400 line plasticity module with no change to the BEM/KKT core. The
+only correctness subtlety is ensuring the residual field is
+\emph{self-equilibrated} on the true boundary --- handled automatically by
+either COMSOL's actual-geometry solve or by the
+Eq.~\eqref{eq:superpose} BEM correction. This is the recommended starting point
+and also a clean validation vehicle (it quantifies how large the
+plasticity-induced correction to the SIFs actually is) before investing in
+Problem~2.
+
+\subsection{In-house thermal-shock model (self-contained alternative)}
+\label{sec:inhouse}
+
+When a COMSOL hand-off is undesirable, the residual field can be produced
+entirely inside VCEM with three coupled ingredients. The model is transient and
+one-way to fracture, so it is solved \emph{once} per loading history and its
+output is the residual stress field of Sec.~\ref{sec:problem1}.
+
+\paragraph{(i) Transient heat conduction.} Solve the heat equation for the
+thermal-shock pulse (e.g.\ a surface heat flux $q''(t)$ representing a plasma
+transient on a tungsten face) \citep{carslaw_jaeger1959}:
+\begin{equation}
+\rho\,c_p(T)\,\frac{\partial T}{\partial t}
+= \nabla\!\cdot\!\big(k(T)\,\nabla T\big),
+\qquad
+-k\,\frac{\partial T}{\partial n}\Big|_{\bdry_q}=q''(t),
+\label{eq:heat}
+\end{equation}
+on a background mesh covering the disk. For axisymmetric or mildly 2D shocks a
+short finite-difference/finite-element thermal solve is adequate; the output is
+$T(\xvec,t)$ and hence the thermal eigenstrain
+$\eps^{\mathrm{th}}=\alpha(T)\,\Delta T(\xvec,t)\,\mathbf I$.
+
+\paragraph{(ii) Incremental thermo-elasto-plastic solve via initial-strain BEM.}
+This is the one place a domain term is genuinely warranted, because
+thermal-shock plasticity is volumetric. Tessellate the disk interior into
+\emph{internal cells} and use the initial-strain boundary integral equation
+\citep{telles1983,brebbia1984,aliabadi2002}, with both the thermal and plastic
+strains carried as the eigenstrain in Eq.~\eqref{eq:bie-domain}. At each time
+increment, the stress at cell integration points drives a von Mises
+($J_2$) return mapping with temperature-dependent yield
+\citep{simo_taylor1985}:
+\begin{equation}
+f=\sqrt{\tfrac{3}{2}\,\mathbf s\!:\!\mathbf s}-\sigma_Y(T,\bar\varepsilon^{\mathrm p})\le 0,
+\qquad
+\Delta\epspl=\Delta\lambda\,\frac{\partial f}{\partial \sig}
+=\Delta\lambda\,\sqrt{\tfrac{3}{2}}\,\frac{\mathbf s}{\|\mathbf s\|},
+\label{eq:j2-inhouse}
+\end{equation}
+iterated to satisfy consistency ($f\le0$, $\Delta\lambda\,f=0$) over the cells
+each step. The same edge-dislocation kernels already in VCEM supply the cell
+stress influence coefficients --- the initial-strain BEM \emph{is} a dislocation
+(eigenstrain) superposition, so the C++ kernel layer is reused; only 2D cell
+quadrature and the return-mapping loop are new.
+
+\paragraph{(iii) Residual field and hand-off.} After the cool-down increment the
+locked-in $\epspl(\xvec)$ defines the residual eigenstrain; its finite-body
+stress (boundary tractions cancelled by the BEM correction,
+Eq.~\eqref{eq:superpose}) is the self-equilibrated $\sig^{\mathrm{res}}(\xvec)$
+passed to the brittle solver exactly as in path~(1a). Validation target: a
+constrained-disk thermal shock should reproduce the known sign pattern
+(compressive yield at the hot face, tensile residual zone on cool-down) and
+crack onset consistent with W heat-load experiments \citep{araksheev_w,
+pintsuk2011}.
+
+\paragraph{Effort.} Medium. It reuses the dislocation kernels but adds (a) a
+transient thermal solver, (b) internal-cell domain quadrature, and (c) the
+return-mapping loop. Note the internal-cell infrastructure built here is
+\emph{exactly} what the optional 2D area-distribution route in
+Sec.~\ref{sec:croacktip} would need, so the investment is shared with
+Problem~2.
+
+% =====================================================================
+\section{Problem 2 --- Polycrystal, GB sliding, and crack-tip plasticity (DBTT)}
+\label{sec:problem2}
+
+\paragraph{Physics and scope.} A 2D aggregate of grains is loaded externally.
+GB sliding accommodates intergranular shear and builds stress concentrations at
+triple junctions and GB ledges; any volumetric residual/internal stress is
+supplied as a \emph{superimposed external field} (Sec.~\ref{sec:problem1}), so
+\textbf{bulk crystal plasticity is excluded by design}. Plasticity is resolved
+\emph{only} where it controls the fracture outcome --- in the process zone of
+each active crack tip, as an explicit cloud of dislocations on slip planes. The
+DBTT then emerges from the competition between cleavage (lattice or GB) and the
+crack-tip shielding that this dislocation cloud provides, with temperature
+entering through dislocation \emph{mobility} and \emph{nucleation}
+\citep{rice_thomson1974,rice1992,hirsch_roberts1991,gumbsch1998,
+giannattasio_roberts2007,tarleton_roberts2009,hartmaier_gumbsch2005}.
+
+\subsection{Microstructure and grain boundaries}
+Tessellate the disk into grains by a Voronoi/Laguerre construction
+\citep{voronoi_okabe2000}, producing a planar graph of GB segments and triple
+junctions --- a structure the \texttt{Ugenerator} topology layer is well suited
+to host. Each grain carries an orientation $\theta_g$ fixing its in-plane slip
+geometry (BCC tungsten $\{110\}/\{112\}\langle111\rangle$ projected to 2D as
+slip directions $\mathbf s^{\alpha}$ and normals $\mathbf m^{\alpha}$). A GB
+segment is a displacement-discontinuity interface --- \emph{the same object
+VCEM already discretizes for cracks} --- endowed with a cohesive/friction
+traction--separation law \citep{xu_needleman1994,raj_ashby1971}:
+\begin{equation}
+t_s = \eta_{\mathrm{gb}}(T)\,\dot\delta_s \ \ (\text{sliding}),
+\qquad
+\text{decohere when } t_n \ge \sigma_{\mathrm{gb}}^{\max}(T),
+\label{eq:gb}
+\end{equation}
+so the brittle intergranular branch is captured purely with discontinuity
+elements already native to the solver.
+
+% --------------------------------------------------------------
+\subsection{Crack-tip plasticity as a continuous dislocation distribution}
+\label{sec:croacktip}
+
+Discrete dislocation dynamics is the wrong tool to graft onto VCEM, for two
+reasons: (i)~the lattice Burgers vector is so small that a realistic tip zone
+would contain an enormous number of individual dislocations, and (ii)~tracking
+their glide is an ODE time-integration framework alien to VCEM's
+density/integral-equation solve. We therefore represent the tip plastic zone as
+a \emph{continuous distribution of dislocations} --- the \emph{same kind of
+object already used for crack faces}, where a smooth density carries the Burgers
+content and $b$ never appears as a counted quantum
+\citep{bilby1968,hills1996ddt,bcs1963,weertman1996,lardner1974}. The zone is an
+\emph{emergent yielded region} whose density is solved, per load increment, from
+a (singular) integral equation under a flow condition --- a sequence of linear
+solves in exactly VCEM's framework, not a particle dynamics. The two questions
+this raises are \emph{(Q1)} how to fix the extent and \emph{(Q2)} which
+geometric carrier to use.
+
+\subsubsection{Q2 --- carrier: slip-plane fan or local tip grid}
+Both options keep the solve in VCEM's wheelhouse.
+
+\paragraph{(V1) Continuous density on a slip-plane fan (recommended for DBTT).}
+Emanate a small fan of slip planes (rays) from the tip along the grain's slip
+directions $\mathbf s^{\alpha}$. On plane $\alpha$ carry a continuous glide
+density $\rho_{\alpha}(r)=-\,d\delta_{\alpha}/dr$, with $\delta_{\alpha}(r)$ the
+plastic slip and $r$ the distance from the tip --- identical in kind to the
+crack-opening density VCEM already solves on a polyline. The governing condition
+replaces the crack's traction-free face by a \emph{flow (yield) condition} on the
+yielded part $0\le r\le\omega_{\alpha}$:
+\begin{equation}
+\tau^{\mathrm{ext}}_{\alpha}(r)
++\sum_{\alpha'}\int_{0}^{\omega_{\alpha'}}\!\!
+K_{\alpha\alpha'}(r,r')\,\rho_{\alpha'}(r')\,dr'
+=\tau_f(T,\dot\varepsilon)\,\operatorname{sgn}(\rho_\alpha),
+\qquad |\tau|<\tau_f \ \text{elsewhere},
+\label{eq:cdd}
+\end{equation}
+where $\tau^{\mathrm{ext}}_{\alpha}$ is the resolved shear from the crack,
+applied/residual field, GBs and the BEM boundary correction, $K_{\alpha\alpha'}$
+is the (self and cross-plane) shear-influence kernel built from the
+\emph{existing} edge-dislocation kernel (\texttt{cpp/src/edge\_dislocation.cpp}),
+and $\tau_f$ is the lattice friction/flow stress. This is the planar
+continuously-distributed-dislocation generalization of the
+Bilby--Cottrell--Swinden strip-yield model \citep{bcs1963,chang_ohr1981}. Because
+it carries the crystallographic slip direction explicitly, V1 is the natural
+choice for the orientation-dependent polycrystal DBTT, and its assembler is the
+crack-face solve with a different right-hand side.
+
+\paragraph{(V2) Continuous density on a local tip grid.} If a smooth,
+orientation-averaged zone is preferred, attach a small 2D grid of cells to the
+tip and carry a continuous plastic strain $\epspl(\xvec)$ (eigenstrain) on it.
+The stress is the initial-strain BEM field of Eq.~\eqref{eq:bie-domain} ---
+\emph{the same machinery as the in-house thermal-shock solve}
+(Sec.~\ref{sec:inhouse}) --- and the density follows from a $J_2$ flow condition
+(Eq.~\eqref{eq:j2-inhouse}) with $\sigma_Y(T)$. Heavier than V1 (genuine 2D cell
+quadrature, near-singular self-cell treatment --- cf.\ the interior-eval
+near-singularity already documented in the BEM) but constitutively simpler and a
+direct reuse of Sec.~\ref{sec:inhouse}. Use V2 when the slip-system geometry is
+not the point; use V1 when it is.
+
+\subsubsection{Fan orientation and count (the key V1 modelling choice)}
+\label{sec:fan}
+Two ways to orient the slip planes, with materially different anisotropy:
+
+\paragraph{(a) Crystallographic ($\theta_g$-locked) --- recommended.} Place the
+planes along the in-plane traces of the BCC tungsten slip systems
+$\{110\}/\{112\}\langle111\rangle$, rotated by the grain orientation $\theta_g$.
+A plane carries density only when its Schmid-resolved shear reaches flow,
+\begin{equation}
+\tau^{\alpha}=\sig:\big(\mathbf s^{\alpha}\!\otimes\!\mathbf m^{\alpha}\big),
+\qquad
+\text{active if } |\tau^{\alpha}|\ge \tau_f(T,\dot\varepsilon),
+\label{eq:schmid}
+\end{equation}
+so the \emph{active subset} of the fan is itself emergent (an active set over
+planes, on top of the active set over yielded length). This is the only choice
+that reproduces grain-to-grain variability --- why one grain shields and blunts
+while its misoriented neighbour cleaves --- which is precisely the polycrystal
+DBTT physics. It ties $K_{\mathrm{shield}}$ (Eq.~\eqref{eq:shield}) to the
+Schmid factors and makes the predicted transition orientation-dependent.
+
+\paragraph{(b) Maximum-shear (continuum) --- baseline only.} Use one or two
+planes along the local maximum-shear directions ($\approx\pm45^\circ$ to the tip
+principal stress). Simple, robust, recovers a BCS/Dugdale-like isotropic zone and
+is a good check against V2 --- but it discards $\theta_g$ and therefore
+\emph{cannot} produce orientation-dependent DBTT or grain variability. Its plane
+set also rotates with the evolving mixed-mode field and must be re-aimed each
+increment. Recommended only as a validation baseline.
+
+\paragraph{Count and a 2D caveat.} A practical fan is the set of distinct
+in-plane $\langle111\rangle$ traces for the chosen 2D section (typically
+$3$--$6$ independent directions); more planes add density-unknown blocks but
+sharpen the anisotropy. Allow each plane to yield independently --- mixed-mode
+tip fields from GB sliding break fan symmetry. \textbf{Caveat:} VCEM's 2D
+plane-strain edge-dislocation kernel carries only the \emph{in-plane (edge)}
+Burgers content; BCC $\langle111\rangle$ slip has strong screw character whose
+out-of-plane (mode-III) shielding is \emph{not} represented. The model therefore
+captures edge-component shielding only --- adequate for a plane-strain DBTT study
+but a known limitation to state explicitly. A \emph{recommended middle ground}:
+crystallographic orientations (a) with the Schmid active-set
+Eq.~\eqref{eq:schmid}, retaining only the in-plane edge projection.
+
+\subsubsection{Q1 --- the emergent extent}
+The zone size is \emph{not} prescribed. The small-scale-yielding estimate
+\begin{equation}
+\omega \sim \frac{1}{\beta\pi}\left(\frac{K_I}{\tau_f(T)}\right)^{2}
+\ \ (\text{or }\sigma_Y),\qquad \beta=2\,(\sigma)\ \text{or}\ 6\,(\varepsilon),
+\label{eq:rp}
+\end{equation}
+\citep{irwin1957} serves only as the \emph{initial guess} for the active-set
+iteration. The actual extent comes from a closure condition:
+\begin{itemize}[leftmargin=1.4em]
+\item \textbf{V1:} the BCS/Dugdale \emph{bounded-stress closure}
+\citep{bcs1963,dugdale1960} --- the yielded length $\omega_{\alpha}$ on each plane
+is the value for which the density vanishes smoothly at the elastic--plastic
+boundary, i.e.\ the $1/\sqrt{r}$ stress singularity at $r=\omega_{\alpha}$ is
+removed. Each increment is a coupled singular-integral solve for $\{\rho_\alpha\}$
+with an outer iteration on $\{\omega_\alpha\}$ enforcing closure.
+\item \textbf{V2:} the \emph{von Mises yield locus}
+$\sigma_{\mathrm{eq}}=\sigma_Y(T)$ --- an active-set sweep grows the plastic cells
+until the elastic stress just outside is sub-yield and consistency
+($f\le0,\ \Delta\lambda\,f=0$) holds inside.
+\end{itemize}
+In both cases the temperature-dependent flow stress makes the emergent zone
+shrink as $T$ falls --- the seed of the DBTT.
+
+\subsection{Ductile-to-brittle transition criterion}
+The continuous density shields the tip; the shielding is an \emph{integral} over
+the density (no sum over discrete dislocations):
+\begin{equation}
+K_{\mathrm{tip}}=K_{\mathrm{applied}}-K_{\mathrm{shield}},
+\qquad
+K_{\mathrm{shield}}=\sum_{\alpha}\int_{0}^{\omega_{\alpha}}
+\frac{\mu}{(\kappa+1)\sqrt{2\pi r}}\;\Phi(\varphi_\alpha)\,\rho_{\alpha}(r)\,dr ,
+\label{eq:shield}
+\end{equation}
+with $\Phi(\varphi_\alpha)$ the angular weight of a glide dislocation on a plane
+at angle $\varphi_\alpha$ to the crack \citep{rice_thomson1974,weertman1996}. The
+flow stress is thermally activated (BCC kink-pair), giving both temperature and
+rate dependence:
+\begin{equation}
+\tau_f(T,\dot\varepsilon)=\tau_0+\Delta\tau\!\left[1-\!\left(\frac{k_BT}{\Delta H_0}
+\ln\frac{\dot\varepsilon_0}{\dot\varepsilon}\right)^{1/q}\right]^{1/p}.
+\label{eq:tauf}
+\end{equation}
+Fracture is brittle when the \emph{local} tip intensity reaches cleavage before
+the zone can shield it:
+\begin{equation}
+\text{cleavage if } K_{\mathrm{tip}}\ge K_{Ic}^{\mathrm{cleave}}
+\ \ (\text{lattice or } K_c^{\mathrm{gb}}),
+\qquad
+\text{else blunting/ductile.}
+\label{eq:dbtt}
+\end{equation}
+At low $T$, $\tau_f$ is large $\Rightarrow$ $\omega_{\alpha}\!\to\!0$,
+$K_{\mathrm{shield}}\!\to\!0$, and cleavage/GB fracture wins; at high $T$ the
+yielded zone extends, $K_{\mathrm{shield}}$ grows, and the tip blunts. The
+crossover $T$ depends on the loading rate $\dot K$ through
+Eq.~\eqref{eq:tauf} --- reproducing the observed rate-dependent W DBTT
+\citep{giannattasio_roberts2007,gumbsch1998,hirsch_roberts1991,
+hartmaier_gumbsch2005}. This continuum picture also connects to the group's
+distributed-dislocation methodology \citep{ghoniem2000parametric,ghoniem_affine}.
+The existing spatially varying $K_c(\xvec)$ (\texttt{CallableToughness}) supplies
+the weak-GB cleavage field for the intergranular branch.
+
+\subsection{Coupling architecture and phasing}
+At each load/temperature increment, run a staggered active-set iteration on the
+existing KKT core:
+\begin{enumerate}[leftmargin=1.4em,itemsep=2pt]
+\item \textbf{Elastic solve.} Assemble the superposed stress
+(Eq.~\eqref{eq:superpose}) from crack-face densities, GB discontinuities, the
+current plastic-zone density ($\rho_{\alpha}$ in V1 / $\epspl$ in V2) and the
+superimposed external/residual field --- BEM enforcing the true outer boundary.
+This is the existing solve with extra source rows.
+\item \textbf{Plastic solve.} Update the zone density and length from the flow
+condition (Eq.~\eqref{eq:cdd} + closure for V1; return mapping + active set for
+V2). \emph{Linear density solves, no time integration.}
+\item \textbf{GB update.} Update sliding/decohesion from Eq.~\eqref{eq:gb}.
+\item \textbf{Fracture check.} Cleave (crack/GB advance) when
+Eq.~\eqref{eq:dbtt} holds; otherwise continue blunting.
+\item Iterate 1--4 to convergence, then advance the increment.
+\end{enumerate}
+
+Because crack faces, GBs, and the tip plastic density are all
+continuous-dislocation objects on the \emph{same} kernel, every step shares one
+assembler --- far cheaper than a generic CP--FEM/CP--BEM coupling. Phasing:
+\textbf{(2A)} elastic grains + GB sliding + brittle decohesion (no tip
+plasticity) to validate the discontinuity machinery; \textbf{(2B)} add the V1
+continuous tip density and the shielding criterion Eq.~\eqref{eq:shield};
+\textbf{(2C)} sweep $T$ and $\dot K$ through Eqs.~\eqref{eq:tauf} and
+\eqref{eq:gb} to map the DBTT.
+
+% =====================================================================
+\section{Summary of recommendations}
+\label{sec:summary}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}p{2.3cm}p{4.7cm}p{4.7cm}p{2.5cm}@{}}
+\toprule
+ & \textbf{Problem 1 (thermal shock)} & \textbf{Problem 2 (polycrystal DBTT)} & \textbf{Effort} \\
+\midrule
+\textbf{Recommended} &
+One-way eigenstrain superposition: residual $\sig^{\mathrm{res}}$ from COMSOL
+(1a) or the in-house thermal-shock model (1b, Sec.~\ref{sec:inhouse})
+$\to$ \texttt{sigma\_func} $\to$ brittle solve &
+GBs as discontinuities + crack-tip plasticity as a \emph{continuous dislocation
+density} on a slip-plane fan (V1), zone extent \emph{emergent} from BCS closure;
+staggered active-set update on the KKT core & 1a: low \newline 1b: medium
+\newline 2: high \\[2pt]
+\textbf{Why} &
+Exact for one-way brittle coupling; hook already exists &
+Crack faces, GBs and the tip density are all continuous-dislocation objects $\to$
+one assembler, one density solve; DBTT enters through $\tau_f(T,\dot\varepsilon)$
+at the tip & --- \\[2pt]
+\textbf{Avoid} &
+Building a domain-integral BEM (use it only inside 1b) &
+Discrete dislocation dynamics (enormous $N$, alien framework); bulk crystal
+plasticity & --- \\
+\bottomrule
+\end{tabular}
+\caption{Recommended modelling routes. Start with Problem~1 (1a) as a
+fast-validating capability; build Problem~2 in the phased order
+2A$\to$2B$\to$2C with the V1 continuous tip density as the workhorse.}
+\end{table}
+
+\paragraph{Single most important design decision.} Keep plasticity as a
+\emph{continuous dislocation density} solved on the same kernel as crack faces.
+Cracks, grain boundaries, and the crack-tip plastic zone are all
+continuous-dislocation-content objects expressible through one set of kernels and
+one boundary-correction solve, so build crack-tip plasticity as a continuous
+density on a slip-plane fan (V1) and let the zone extent emerge from the
+BCS bounded-stress closure, with $\tau_f(T,\dot\varepsilon)$ carrying the DBTT.
+Reserve the domain integral Eq.~\eqref{eq:bie-domain} for the cases that truly
+need a volumetric field --- the in-house thermal-shock solve
+(Sec.~\ref{sec:inhouse}) and the optional V2 tip grid. Do \emph{not} adopt
+discrete dislocation dynamics (the lattice $b$ forces an intractable count and
+its particle-ODE solve is alien to VCEM), and do not introduce bulk crystal
+plasticity: the DBTT physics lives at the tip.
+
+\bibliographystyle{unsrtnat}
+\bibliography{plasticity_plan}
+
+\end{document}
