@@ -120,11 +120,34 @@ class CrackGrowthParams:
     stop_on_all_keff_below_kc: bool = False
 
     # Graceful stop when every deg-1 tip in the propagation result has
-    # growth_force == 0 (either snapped at the disk boundary, below the
-    # toughness threshold, or eliminated below the delta_a tolerance). The
-    # runner sets res.stopped_reason = "all_growth_force_zero" so the
-    # outer-coupling driver can break its own loop.
+    # growth_force == 0. A tip's growth_force is forced to 0 in two
+    # situations, both of which are flagged via TipPropagationReport.reason:
+    #   - "snapped_at_boundary": vid is in CrackPropagator.snapped_vertex_ids
+    #     (a permanent flag set the first time the tip crosses outside the
+    #     disk; the tip stays at r=R and can never drive growth again).
+    #   - "below_toughness": K_eff <= Kc(x_tip) so K_eff - Kc clamps to 0.
+    # When every tip carries one of these two reasons there is no
+    # remaining driving force anywhere in the network and the run
+    # terminates. Tips below the delta_a tolerance ("below_tolerance") do
+    # NOT count -- they still have growth_force > 0 and may grow next step.
+    # The runner sets res.stopped_reason = "all_growth_force_zero".
     stop_on_all_growth_force_zero: bool = True
+
+    # Terminate when a connected component of the crack network contains
+    # >=2 disk-boundary vertices. Disabled by default: in the present
+    # solver the snap -> growth_force=0 path already arrests every
+    # boundary-reaching tip permanently, so once all tips are arrested
+    # stop_on_all_growth_force_zero fires for the same physical reason
+    # without depending on the snap-history bookkeeping. Set to True only
+    # if you want an early stop the moment a span first forms (rather than
+    # waiting for the last interior tip to also arrest).
+    stop_on_spanning_cluster: bool = False
+    spanning_boundary_tol_m: float = 1.0e-9
+    # When True the spanning termination check ignores the propagator's
+    # snap history and uses only the geometric criterion (r >= R -
+    # spanning_boundary_tol_m). Only relevant when
+    # stop_on_spanning_cluster is True.
+    spanning_geometric_only: bool = False
 
     # Wall-clock runtime limit (seconds). When set, the STEP loop breaks
     # before starting any step that would push the cumulative run time past
@@ -139,6 +162,20 @@ class CrackGrowthParams:
     # imageio).
     enable_video_encode: bool = True
     video_fps: int = 4
+
+    # Polar fields to use as background for the deformed_network and
+    # network_graph_connectivity videos. For each component listed, finalize
+    # emits <metric>_<comp_lower>.mp4 with brazilian_disk_<comp>_polar.png as
+    # the bg (cropped to the disk, resized + recentred to the frame disk).
+    # Empty disables the bg pass entirely (only contour videos are written).
+    video_bg_components: Tuple[str, ...] = ("Sxx", "Syy")
+    # Bg disk scale relative to the frame disk (1.0 = match exactly,
+    # calibrated value matches the disk boundary at typical Brazilian-disk
+    # layouts).
+    video_bg_scale: float = 0.974
+    # Bg opacity blended against white before compositing
+    # (0.0=transparent, 1.0=opaque).
+    video_bg_alpha: float = 0.5
 
 
 # ============================================================
@@ -908,24 +945,61 @@ def run_network_growth_uncoupled(
                         terminate_tag = "all_keff_below_kc"
                         break
 
-                # All-tip growth_force == 0 stop: nobody is driving growth
-                # this step (every tip is snapped at the boundary, below
-                # Kc, or eliminated below the delta_a tolerance). Trigger
-                # the same graceful-stop path so the outer driver can
-                # break its loop too.
-                if bool(params.stop_on_all_growth_force_zero) and grew == 0 and len(result.reports) > 0:
+                # All-tip growth_force == 0 stop: every tip in the network
+                # has its growth_force forced to zero, either by being
+                # snapped at the disk boundary (permanent) or by K_eff
+                # falling at/below Kc. Tips merely below the delta_a
+                # tolerance still carry growth_force > 0 and do NOT count
+                # here (a future step or a coupling refresh could lift
+                # them above the tolerance again).
+                _gf_zero_reasons = {"snapped_at_boundary", "below_toughness"}
+                if (
+                    bool(params.stop_on_all_growth_force_zero)
+                    and len(result.reports) > 0
+                    and all(
+                        str(getattr(r, "reason", "")) in _gf_zero_reasons
+                        for r in result.reports
+                    )
+                ):
                     n_snapped_now = sum(
                         1 for r in result.reports
                         if str(getattr(r, "reason", "")) == "snapped_at_boundary"
                     )
+                    n_below_kc = sum(
+                        1 for r in result.reports
+                        if str(getattr(r, "reason", "")) == "below_toughness"
+                    )
                     print(
                         "[stop] all-tip growth_force=0 "
-                        f"(tips={len(result.reports)}, snapped={n_snapped_now}) "
+                        f"(tips={len(result.reports)}, snapped={n_snapped_now}, "
+                        f"below_toughness={n_below_kc}) "
                         f"at outer={cyc}, inner={inner_step}, global_step={global_step}."
                     )
                     terminate_run = True
                     terminate_tag = "all_growth_force_zero"
                     break
+
+                if bool(params.stop_on_spanning_cluster):
+                    from fracture_utils.Ugenerator.spanning_cluster import find_spanning_clusters
+                    _snap_in = (
+                        None if bool(getattr(params, "spanning_geometric_only", False))
+                        else prop.snapped_vertex_ids
+                    )
+                    spanning = find_spanning_clusters(
+                        net, R_disk,
+                        snapped_vertex_ids=_snap_in,
+                        boundary_tol_m=float(params.spanning_boundary_tol_m),
+                    )
+                    if spanning:
+                        n_b = sum(len(b) for _c, b in spanning)
+                        print(
+                            f"[stop] spanning cluster formed "
+                            f"({len(spanning)} component(s), {n_b} boundary vertices) "
+                            f"at outer={cyc}, inner={inner_step}, global_step={global_step}."
+                        )
+                        terminate_run = True
+                        terminate_tag = "spanning_cluster_formed"
+                        break
 
                 reached_inner_cap = (
                     params.max_inner_cycles_per_outer is not None
@@ -1087,6 +1161,13 @@ def run_growth_steps(
         Uses the running interpreter (sys.executable) so the conda env's
         imageio + PIL are picked up. Failures are logged and swallowed so
         finalize never aborts on the video step.
+
+        Runs in passes:
+          1. Stress contour videos (no bg overlay).
+          2..N. For each component in params.video_bg_components: the
+                deformed_network and network_graph_connectivity videos,
+                with brazilian_disk_<comp>_polar.png as bg and
+                _<comp_lower> suffix on the output filenames.
         """
         here = Path(__file__).resolve()
         script = None
@@ -1098,15 +1179,52 @@ def run_growth_steps(
         if script is None:
             print("[finalize] tools/make_run_videos.py not found; skipping videos")
             return
-        try:
-            print(f"[finalize] encoding videos via {script.name} (fps={params.video_fps})")
-            subprocess.run(
-                [sys.executable, str(script), str(out_dir),
-                 "--fps", str(int(params.video_fps))],
-                check=False,
+
+        contour_metrics = (
+            "brazilian_disk_sxx_contour",
+            "brazilian_disk_syy_contour",
+            "brazilian_disk_sxy_contour",
+        )
+        network_metrics = ("deformed_network", "network_graph_connectivity")
+        bg_components = tuple(getattr(params, "video_bg_components", ()) or ())
+        bg_scale = float(getattr(params, "video_bg_scale", 0.974))
+        bg_alpha = float(getattr(params, "video_bg_alpha", 0.5))
+        fps = int(params.video_fps)
+
+        def _run(extra_args, tag):
+            try:
+                print(f"[finalize] encoding videos ({tag}, fps={fps})")
+                subprocess.run(
+                    [sys.executable, str(script), str(out_dir), "--fps", str(fps)]
+                    + list(extra_args),
+                    check=False,
+                )
+            except Exception as _e:
+                print(f"[finalize] video encode ({tag}) failed: {_e}")
+
+        _run(
+            ["--metrics", *contour_metrics, "--no-bg"],
+            tag="contours",
+        )
+
+        for comp in bg_components:
+            bg_path = Path(out_dir) / f"brazilian_disk_{comp}_polar.png"
+            if not bg_path.is_file():
+                print(
+                    f"[finalize] bg not found for component {comp}: "
+                    f"{bg_path.name}; skipping that pass"
+                )
+                continue
+            _run(
+                [
+                    "--metrics", *network_metrics,
+                    "--bg", str(bg_path),
+                    "--bg-scale", f"{bg_scale:.4f}",
+                    "--bg-alpha", f"{bg_alpha:.4f}",
+                    "--out-suffix", f"_{comp.lower()}",
+                ],
+                tag=f"network bg={comp}",
             )
-        except Exception as _e:
-            print(f"[finalize] video encode failed: {_e}")
 
     def _finalize_run(reason: str):
         """Persist step_history, generate metrics plots, encode videos.
@@ -1341,6 +1459,14 @@ def run_growth_steps(
         calc = DCENetworkStaticV4(material, network, applied)
         sol = calc.solve(**base_solver_kwargs)
         res = DCEResultsNetworkV4(calc, sol)
+        # Attach the propagator's snap history so the connectivity plot's
+        # spanning detection matches the termination check (the plot reads
+        # self.res.snapped_vertex_ids; without this it sees only geometric
+        # boundary vertices and the title can disagree with [stop] output).
+        try:
+            setattr(res, "snapped_vertex_ids", set(prop.snapped_vertex_ids))
+        except Exception:
+            pass
         if save_outputs:
             pl = DCEPlotterV4(res, out_dir=step_dir)
             _call(pl, "plot_network_graph")
@@ -1441,17 +1567,73 @@ def run_growth_steps(
                     )
                     terminate_tag = "all_keff_below_kc"
                     break
-            if bool(params.stop_on_all_growth_force_zero) and grew == 0 and len(result.reports) > 0:
+            # All-tip growth_force == 0 stop: every tip is either snapped at
+            # the disk boundary (permanent gf=0) or below toughness (K_eff
+            # <= Kc => gf=0). Tips merely below the delta_a tolerance still
+            # carry gf > 0 and do not trigger this stop.
+            _gf_zero_reasons = {"snapped_at_boundary", "below_toughness"}
+            if (
+                bool(params.stop_on_all_growth_force_zero)
+                and len(result.reports) > 0
+                and all(
+                    str(getattr(r, "reason", "")) in _gf_zero_reasons
+                    for r in result.reports
+                )
+            ):
                 n_snapped = sum(
                     1 for r in result.reports
                     if str(getattr(r, "reason", "")) == "snapped_at_boundary"
                 )
+                n_below_kc = sum(
+                    1 for r in result.reports
+                    if str(getattr(r, "reason", "")) == "below_toughness"
+                )
                 print(
                     f"[stop] all-tip growth_force=0 at STEP_{step:02d} "
-                    f"(tips={len(result.reports)}, snapped={n_snapped})."
+                    f"(tips={len(result.reports)}, snapped={n_snapped}, "
+                    f"below_toughness={n_below_kc})."
                 )
                 terminate_tag = "all_growth_force_zero"
                 break
+
+            if bool(params.stop_on_spanning_cluster):
+                from fracture_utils.Ugenerator.spanning_cluster import find_spanning_clusters
+                _geom_only = bool(getattr(params, "spanning_geometric_only", False))
+                spanning = find_spanning_clusters(
+                    net, R_disk,
+                    snapped_vertex_ids=None if _geom_only else prop.snapped_vertex_ids,
+                    boundary_tol_m=float(params.spanning_boundary_tol_m),
+                )
+                if spanning:
+                    n_b = sum(len(b) for _c, b in spanning)
+                    mode = "geometric" if _geom_only else "geom+snap-history"
+                    print(
+                        f"[stop] spanning cluster formed at STEP_{step:02d} "
+                        f"({len(spanning)} component(s), {n_b} boundary vertices, mode={mode})."
+                    )
+                    vmap_now = {int(v.id): v for v in net.vertices}
+                    snap_set = set(int(v) for v in prop.snapped_vertex_ids)
+                    for _ci, (_comp, _bset) in enumerate(spanning, start=1):
+                        for vid in sorted(_bset):
+                            v = vmap_now.get(int(vid))
+                            if v is None:
+                                continue
+                            x_mm = float(v.x) * 1e3
+                            y_mm = float(v.y) * 1e3
+                            r_mm = float(np.hypot(v.x, v.y)) * 1e3
+                            R_mm = float(R_disk) * 1e3
+                            src = []
+                            if int(vid) in snap_set:
+                                src.append("snapped-history")
+                            if r_mm >= R_mm - float(params.spanning_boundary_tol_m) * 1e3:
+                                src.append("geometric")
+                            print(
+                                f"  [span-vert] comp={_ci} vid={int(vid)} "
+                                f"x={x_mm:+.3f} y={y_mm:+.3f} r={r_mm:.3f} "
+                                f"(R={R_mm:.3f}) mm  via=[{','.join(src) or 'none'}]"
+                            )
+                    terminate_tag = "spanning_cluster_formed"
+                    break
 
             # ----- BEM correction every K steps -----
             if bem_freq > 0 and (step % bem_freq == 0) and step < max_steps:
