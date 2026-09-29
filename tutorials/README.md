@@ -20,7 +20,7 @@ input/<case>.xlsx  ──>  <tutorial>.ipynb  ──>  output/YYYYMMDD_HHMMSS_<l
 
 Start with Tutorial 01. Tutorial 02 reuses its model-building steps and adds the propagation
 loop that drives the full Brazilian-disk simulations in
-[`VCEM_4_0/notebooks/SimulationsCpp.ipynb`](../VCEM_4_0/notebooks/SimulationsCpp.ipynb).
+[`vcem/notebooks/SimulationsCpp.ipynb`](../vcem/notebooks/SimulationsCpp.ipynb).
 
 ## Running
 

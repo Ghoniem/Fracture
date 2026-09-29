@@ -122,7 +122,7 @@ import matplotlib.pyplot as plt
 TUT_DIR = Path.cwd()                          # this tutorial's folder
 sys.path.insert(0, str(TUT_DIR.parent))       # tutorials/ -> tutorial_utils
 import tutorial_utils as tu
-tu.setup_paths()                              # VCEM_4_0/ -> fracture_utils
+tu.setup_paths()                              # vcem/ -> fracture_utils
 
 from fracture_utils.Usolver.network import CrackNetworkV4
 from fracture_utils.Usolver.material import Material, AppliedStress
@@ -713,7 +713,7 @@ print("files:", sorted(p.name for p in run_dir.iterdir()))
    and the corrective kinks come sooner and are no longer symmetric.
 
 **Next.** The same loop, with the plate replaced by a finite disk solved by the BEM, drives the
-full Brazilian-disk simulations in `VCEM_4_0/notebooks/SimulationsCpp.ipynb`.
+full Brazilian-disk simulations in `vcem/notebooks/SimulationsCpp.ipynb`.
 '''),
     ]
 

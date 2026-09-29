@@ -1,0 +1,2 @@
+run,engine,n_panels,a_m,sigma_yy_Pa,max_K_err,cod_rms_err,conv_rate_KI,status
+20260929_164818_inclined_crack_97d0c0e5,python,80,0.005,100000000,0.02574806694,0.008953174415,0.6432769667,PASS
