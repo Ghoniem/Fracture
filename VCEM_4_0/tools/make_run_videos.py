@@ -21,7 +21,7 @@ override, or --bg-metrics <names...> to change which metrics get a bg.
 A metric with zero frames on disk is skipped with a warning.
 
 Usage:
-    python tools/make_run_videos.py <run_dir> [--fps 5] [--out-subdir videos]
+    python VCEM_4_0/tools/make_run_videos.py <run_dir> [--fps 5] [--out-subdir videos]
                                     [--metrics deformed_network ...]
                                     [--bg PATH | --no-bg]
                                     [--bg-metrics deformed_network ...]

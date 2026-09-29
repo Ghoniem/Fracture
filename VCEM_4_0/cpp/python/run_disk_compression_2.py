@@ -352,7 +352,7 @@ finally:
 
 # Final video stitch (best-effort)
 try:
-    _tools_dir = str(_repo_root.parent / "tools")
+    _tools_dir = str(_repo_root / "tools")
     if _tools_dir not in sys.path:
         sys.path.insert(0, _tools_dir)
     from make_run_videos import make_videos as _make_videos

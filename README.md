@@ -259,11 +259,11 @@ Fracture/
 │   │   └── CMakeLists.txt
 │   ├── input/                      # case workbook, loader, provenance, network seeder
 │   ├── notebooks/                  # SimulationsCpp.ipynb — the main driver
+│   ├── tools/                      # run videos, symmetry diagnostic
 │   ├── preamble.py                 # notebook path and import helper
 │   └── output/                     # timestamped run directories (gitignored)
 ├── _archive/                   # VCM_1_0 … VCM_3_4 and early multi-crack code (read-only)
 ├── tutorials/                  # two self-checking tutorials on simple crack problems
-├── tools/                      # run videos, symmetry diagnostic
 ├── docs/
 │   ├── Publications/                     # the two published VCEM papers (PDF)
 │   ├── Fragmentation_Phase_Transition/   # manuscript and simulation-campaign plan
@@ -448,12 +448,12 @@ VCEM_4_0/output/YYYYMMDD_HHMMSS_<output_dir_name>/
 └── videos/*.mp4                                # per-step animations
 ```
 
-Videos are assembled at the end of each run by `tools/make_run_videos.py`, which
+Videos are assembled at the end of each run by `VCEM_4_0/tools/make_run_videos.py`, which
 composites the network frames onto the baseline stress field; a failure there does not
 fail the run. It can also be called on any existing run directory:
 
 ```bash
-python tools/make_run_videos.py VCEM_4_0/output/<run_dir> --fps 5
+python VCEM_4_0/tools/make_run_videos.py VCEM_4_0/output/<run_dir> --fps 5
 ```
 
 Because the workbook hash, the resolved configuration and the git revision are written
@@ -498,7 +498,7 @@ force, and two SIF symmetry bugs (panel allocation on kinked polylines, tip orie
 **Diagnostics** — `check_symmetry.py` and `check_bc_symmetry.py` (a symmetric BC on a
 symmetric mesh must give a symmetric field to machine precision; residuals above
 ~$10^{-6}$ indicate a bug, not discretization noise); `diag_conditioning.py` (cond of
-$\mathbf{K}$, $\mathbf{K}^T\mathbf{K}$ and the KKT matrix); `tools/diag_panel_mirror.py`
+$\mathbf{K}$, $\mathbf{K}^T\mathbf{K}$ and the KKT matrix); `VCEM_4_0/tools/diag_panel_mirror.py`
 (mirror-symmetric network to locate the source of SIF asymmetry).
 
 ---

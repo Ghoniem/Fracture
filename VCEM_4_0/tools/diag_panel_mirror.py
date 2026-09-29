@@ -24,7 +24,7 @@ import numpy as np
 import faulthandler
 faulthandler.enable()
 
-REPO = Path(__file__).resolve().parents[1]
+REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "VCEM_4_0"))
 sys.path.insert(0, str(REPO / "VCEM_4_0" / "cpp" / "python"))
 
