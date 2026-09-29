@@ -89,3 +89,10 @@ scratch/
 
 # Simulation run outputs (large, regenerable)
 VCEM_4_0/output/
+
+# =========================
+# macOS zip / Windows folder metadata
+# =========================
+__MACOSX/
+._*
+desktop.ini
