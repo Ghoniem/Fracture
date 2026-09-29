@@ -1,0 +1,7 @@
+Diagnostics — 20260929_163017_kinking_growth_d5e360fd
+
+[PASS] first kink angle vs MTS: 7.105e-15 deg (tolerance 1 deg)
+[PASS] final |K_II| / K_I: 0.007749 - (tolerance 0.05 -)
+[PASS] path point-symmetry residual: 1.064e-08 x a (tolerance 1e-06 x a)
+
+Overall: PASS

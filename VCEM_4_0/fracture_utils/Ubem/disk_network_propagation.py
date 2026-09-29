@@ -1171,8 +1171,8 @@ def run_growth_steps(
         """
         here = Path(__file__).resolve()
         script = None
-        for cand in (here.parents[3] / "tools" / "make_run_videos.py",
-                     here.parents[2] / "tools" / "make_run_videos.py"):
+        for cand in (here.parents[2] / "tools" / "make_run_videos.py",
+                     here.parents[3] / "tools" / "make_run_videos.py"):
             if cand.exists():
                 script = cand
                 break

@@ -415,7 +415,7 @@ def run_disk_compression_2(cfg):
     # done; we just log and continue.
     try:
         import sys as _sys
-        _tools_dir = str(repo_root.parent / "tools")
+        _tools_dir = str(repo_root / "tools")
         if _tools_dir not in _sys.path:
             _sys.path.insert(0, _tools_dir)
         from make_run_videos import make_videos as _make_videos
