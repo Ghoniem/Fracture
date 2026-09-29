@@ -1,0 +1,6 @@
+Diagnostics — 20260929_162926_inclined_crack_d5e360fd
+
+[PASS] max K error over the angle sweep: 0.02575 x K0 (tolerance 0.05 x K0)
+[PASS] RMS COD error: 0.008953 x max COD (tolerance 0.05 x max COD)
+
+Overall: PASS
