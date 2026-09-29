@@ -34,7 +34,7 @@ A Plan for Two Tungsten Fracture Problems}}
 \begin{abstract}
 This note proposes the most efficient routes to introduce plastic deformation
 into \texttt{VCEM} (the dislocation-based, boundary-element fracture code in
-\texttt{VCEM\_4\_0/}; \citealp{Ghoniem2026VCEMa,Ghoniem2026VCEMb}) for two target problems:
+\texttt{vcem/}; \citealp{Ghoniem2026VCEMa,Ghoniem2026VCEMb}) for two target problems:
 (1)~a constrained, thermally shocked disk whose residual plastic strain drives
 \emph{brittle} fracture on cool-down, and
 (2)~a 2D polycrystal whose grain-boundary (GB) sliding generates internal
@@ -65,7 +65,7 @@ Sec.~\ref{sec:croacktip}.
 \section{What the current code provides}
 \label{sec:current}
 
-The relevant facts about \texttt{VCEM\_4\_0/}, established by code inspection:
+The relevant facts about \texttt{vcem/}, established by code inspection:
 
 \begin{enumerate}[leftmargin=1.4em]
 \item \textbf{Boundary solver.} A 2D direct-collocation elastostatic BEM with

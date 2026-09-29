@@ -1,8 +1,8 @@
-# Fracture — VCEM
+# VCEM
 
 **Variational Crack Element Method for crack networks in finite elastic bodies.**
 
-Fracture is a simulation suite for the nucleation, growth, branching, coalescence and
+VCEM is a simulation suite for the nucleation, growth, branching, coalescence and
 fragmentation of crack networks in two-dimensional elastic solids. The reference
 problem is the **diametral (Brazilian) disk compression test**: a tensile field along
 the loaded diameter drives pre-existing flaws to kink, branch and link up, until the
@@ -22,6 +22,8 @@ than a volume mesh.
 - **Languages** — Python (formulation, orchestration, post-processing) and C++17
   (Eigen + OpenMP backend for the BEM, KKT and topology hot paths, exposed through
   pybind11).
+- **Version** — 4.1.0 ([release notes](CHANGELOG.md)). Releases are git tags `vX.Y.Z`;
+  see [Versions and releases](#versions-and-releases).
 - **License** — MIT.
 - **Name** — *VCM* (Variational Crack Method) is the 1.x–3.x Python line; *VCEM*
   (Variational Crack Element Method) is the 4.x line with the C++ backend.
@@ -237,9 +239,9 @@ $p = P/(L h)$.
 ## 3. Repository structure
 
 ```
-Fracture/
-├── VCEM_4_0/                   # Active development — recommended entry point
-│   ├── fracture_utils/             # Python package (v0.2.5)
+VCEM/
+├── vcem/                       # The code — recommended entry point
+│   ├── fracture_utils/             # Python package (v4.1.0)
 │   │   ├── Usolver/                    # network graph, panels, kernels, constraints, KKT,
 │   │   │                               # isolation, C++ dispatch (cpp_dispatch.py)
 │   │   ├── Ubem/                       # BEM solver, BCs, coupling (one-way / iterative /
@@ -279,7 +281,7 @@ Fracture/
 
 | Module | Status | Description |
 |---|---|---|
-| `VCEM_4_0/` | **Active (development)** | Excel-driven workflow, C++ backend, random flaw populations, fragmentation diagnostics. Recommended starting point. |
+| `vcem/` | **Active** | Excel-driven workflow, C++ backend, random flaw populations, fragmentation diagnostics. Recommended starting point. |
 | `_archive/VCM_3_4/` | Archived (last Python baseline) | VCM 3.3 frozen for displacement-controlled network runs; carries the analytical validation outputs and `ValidationRunner.ipynb`. |
 | `_archive/VCM_3_0` – `VCM_3_3` | Archived | BEM coupling (3.0), coupled evolution (3.1), disk compression (3.2), network energetics and topology operations (3.3). |
 | `_archive/VCM_2_0` – `VCM_2_2` | Archived | Network evolution in uniform and non-uniform fields; kinked, branched and curved-crack validation; mesh-budget policy. |
@@ -294,8 +296,28 @@ further development.
 | Branch | Contents |
 |---|---|
 | `main` | Released line. |
-| `vcm_development` | Active development of VCEM_4_0. |
+| `vcm_development` | Active development of VCEM. |
 | `vcm_3_4_refactor` | Refactor of the VCM_3_4 Python package. |
+
+### Versions and releases
+
+VCEM uses [semantic versioning](https://semver.org). The version lives in git tags and
+releases, never in folder names.
+
+| Where | Name |
+|---|---|
+| Git tag on the release commit | `v4.1.0` |
+| GitHub release title | `VCEM 4.1.0` |
+| Downloadable archive | `VCEM-4.1.0.zip` |
+| Separate local copy of a release | `VCEM-4.1.0` |
+
+The version in `vcem/fracture_utils/__init__.py` (`__version__`) and in the C++ module
+(`bem_cpp.__version__`) matches the latest release. Every release is listed in
+[`CHANGELOG.md`](CHANGELOG.md). The history before 4.1.0 is VCM 1.0–3.4 (pure Python,
+kept in `_archive/`) and VCEM 4.0 (the C++ port).
+
+To reproduce a published result, check out its tag, `git checkout v4.1.0`, or download
+that release's archive.
 
 ---
 
@@ -304,8 +326,8 @@ further development.
 ### 4.1 Python environment
 
 ```bash
-git clone https://github.com/Ghoniem/Fracture.git
-cd Fracture
+git clone https://github.com/Ghoniem/VCEM.git
+cd VCEM
 python -m pip install -r requirements.txt
 python -m pip install openpyxl pybind11
 ```
@@ -339,7 +361,7 @@ single-threaded. MSVC's bundled OpenMP 2.0 is sufficient.
 Build and install into the Python package:
 
 ```bash
-cd VCEM_4_0/cpp
+cd vcem/cpp
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DPython_EXECUTABLE="$(which python)"
 cmake --build build --config Release --target bem_cpp
 cmake --install build --config Release
@@ -350,10 +372,10 @@ extension (`bem_cpp.*.pyd` / `.so`) into `cpp/python/bem_cpp/`, where the notebo
 imports it. Smoke test:
 
 ```bash
-python -c "import sys; sys.path.insert(0, 'VCEM_4_0/cpp/python'); import bem_cpp; print(bem_cpp.__version__)"
+python -c "import sys; sys.path.insert(0, 'vcem/cpp/python'); import bem_cpp; print(bem_cpp.__version__)"
 ```
 
-See [`VCEM_4_0/cpp/README.md`](VCEM_4_0/cpp/README.md) for details.
+See [`vcem/cpp/README.md`](vcem/cpp/README.md) for details.
 
 ---
 
@@ -370,7 +392,7 @@ engine only:
 
 ### 5.1 Notebook (recommended)
 
-Open `VCEM_4_0/notebooks/SimulationsCpp.ipynb`. It has three steps:
+Open `vcem/notebooks/SimulationsCpp.ipynb`. It has three steps:
 
 1. **Pick the case workbook** — `CASE_XLSX = "input/disk_compression_data.xlsx"`.
 2. **Preamble, Excel load, engine setup** — loads the case, selects the engine from the
@@ -391,13 +413,13 @@ cfg = load_case("input/disk_compression_data.xlsx")   # -> CaseConfig
 print(cfg.engine, cfg.coupling_method, cfg.crack_growth.Kc)
 ```
 
-`VCEM_4_0/cpp/python/run_disk_compression_2.py` and `run_disk_compression_2_cpp.py`
+`vcem/cpp/python/run_disk_compression_2.py` and `run_disk_compression_2_cpp.py`
 run the same case end-to-end outside Jupyter.
 
 ### 5.3 A random flaw population
 
 ```bash
-cd VCEM_4_0
+cd vcem
 python input/seed_crack_network.py input/disk_compression_data.xlsx \
        --n 20 --mean-mm 2 --std-mm 4 --seed 0 --domain disk
 ```
@@ -409,7 +431,7 @@ cracks. Lengths are drawn from a truncated-normal or log-normal distribution.
 
 ## 6. Inputs
 
-Every case is one workbook, e.g. `VCEM_4_0/input/disk_compression_data.xlsx`, read by
+Every case is one workbook, e.g. `vcem/input/disk_compression_data.xlsx`, read by
 `input/excel_io.py:load_case` into a `CaseConfig` dataclass. Its sheets are:
 
 | Sheet | Contents |
@@ -435,7 +457,7 @@ A fresh workbook with the dataclass defaults is generated by
 Each run writes a self-describing directory:
 
 ```
-VCEM_4_0/output/YYYYMMDD_HHMMSS_<output_dir_name>/
+vcem/output/YYYYMMDD_HHMMSS_<output_dir_name>/
 ├── provenance_<id>.json / .md    # flattened CaseConfig, workbook path and SHA-256,
 │                                 # engine, OpenMP threads, host, CPU, Python/NumPy, git rev
 ├── STEP_00 … STEP_NN/            # per-step stress contours, deformed network,
@@ -448,12 +470,12 @@ VCEM_4_0/output/YYYYMMDD_HHMMSS_<output_dir_name>/
 └── videos/*.mp4                                # per-step animations
 ```
 
-Videos are assembled at the end of each run by `VCEM_4_0/tools/make_run_videos.py`, which
+Videos are assembled at the end of each run by `vcem/tools/make_run_videos.py`, which
 composites the network frames onto the baseline stress field; a failure there does not
 fail the run. It can also be called on any existing run directory:
 
 ```bash
-python VCEM_4_0/tools/make_run_videos.py VCEM_4_0/output/<run_dir> --fps 5
+python vcem/tools/make_run_videos.py vcem/output/<run_dir> --fps 5
 ```
 
 Because the workbook hash, the resolved configuration and the git revision are written
@@ -464,7 +486,7 @@ it.
 
 ## 8. Examples, tests and verification
 
-**Driver notebooks** — `VCEM_4_0/notebooks/SimulationsCpp.ipynb` (Excel-driven,
+**Driver notebooks** — `vcem/notebooks/SimulationsCpp.ipynb` (Excel-driven,
 C++/Python switchable); `_archive/VCM_3_4/notebooks/Simulations.ipynb` (cases
 `disk_compression_2`, `disk_compression_inclined`, `disk_energetics`,
 `disk_experiments`) and `_archive/VCM_3_4/notebooks/ValidationRunner.ipynb`.
@@ -486,7 +508,7 @@ and network simplification are kept as worked examples in the same folder.
 `fracture_utils/Uvalidation/` provides the COD and SIF sweeps over solver knobs (panel
 count, fit window) used to produce them.
 
-**C++ parity tests** — `VCEM_4_0/cpp/python/test_*_vs_python.py` check each ported
+**C++ parity tests** — `vcem/cpp/python/test_*_vs_python.py` check each ported
 component against the Python reference: Kelvin kernels and quadrature, edge-dislocation
 kernels, the crack operator, the boundary operators $\mathbf{M}_t$, $\mathbf{M}_u$,
 $\mathbf{N}_{bc}$, the KKT solve, the BEM solve, segment intersection, and the
@@ -498,7 +520,7 @@ force, and two SIF symmetry bugs (panel allocation on kinked polylines, tip orie
 **Diagnostics** — `check_symmetry.py` and `check_bc_symmetry.py` (a symmetric BC on a
 symmetric mesh must give a symmetric field to machine precision; residuals above
 ~$10^{-6}$ indicate a bug, not discretization noise); `diag_conditioning.py` (cond of
-$\mathbf{K}$, $\mathbf{K}^T\mathbf{K}$ and the KKT matrix); `VCEM_4_0/tools/diag_panel_mirror.py`
+$\mathbf{K}$, $\mathbf{K}^T\mathbf{K}$ and the KKT matrix); `vcem/tools/diag_panel_mirror.py`
 (mirror-symmetric network to locate the source of SIF asymmetry).
 
 ---
@@ -555,7 +577,7 @@ Hoffman2 cluster. `-march=native` binaries are not portable across node types.
 | `docs/VCM Code/` | VCM theory, architecture and code organization notebooks; `Variational_Fracture.pdf` |
 | `docs/Data/` | Lo (1978) branched- and kinked-crack reference data |
 | `docs/Literature/` | the reference library: BEM, dislocation-based fracture, curved, kinked and branched cracks, Brazilian disk testing, variational fracture, tungsten under heat loads |
-| `VCEM_4_0/cpp/README.md` | C++ backend layout, build and smoke test |
+| `vcem/cpp/README.md` | C++ backend layout, build and smoke test |
 | `fracture_utils/Upropagation/PropagationReadMe.md`, `Ugenerator/NetworkGeneratorReadme.md` | module notes |
 
 LaTeX sources sit next to their `.bib` files and compile from inside their own folder.
@@ -609,6 +631,9 @@ Work in progress, in [`docs/Fragmentation_Phase_Transition/`](docs/Fragmentation
 - N. M. Ghoniem, *Fragmentation of Compressed Disks as a Phase Transition: A
   Variational Crack Element Method Framework* (in preparation).
 
+To cite the software itself, give the release you used, e.g. *VCEM 4.1.0*
+(git tag `v4.1.0`, https://github.com/Ghoniem/VCEM).
+
 Related work from the group:
 
 - M. Alabdullah and N. M. Ghoniem, *Crack initiation and propagation in the diametral
@@ -630,12 +655,12 @@ Full reference lists are in the `.bib` files under `docs/`.
 
 ## 12. Repository conventions
 
-- **One active module, archived predecessors.** Development happens in `VCEM_4_0/`;
+- **One active module, archived predecessors.** Development happens in `vcem/`;
   `_archive/` (VCM 1.0 through 3.4) is read-only, so earlier results stay reproducible.
 - **The workbook is the case.** Parameters live in the Excel workbook with a key, value
   and description; code reads them and does not hard-code them.
 - **Outputs are immutable and stamped.** Runs never overwrite one another;
-  `VCEM_4_0/output/` and `build/` are gitignored.
+  `vcem/output/` and `build/` are gitignored.
 - **Python first, then C++.** New physics is developed in Python, which is the
   reference implementation. A C++ port mirrors the Python arithmetic line by line and
   lands with a parity test in `cpp/python/` before it is wired into the dispatcher. The

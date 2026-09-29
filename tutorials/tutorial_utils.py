@@ -28,7 +28,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 TUTORIALS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = TUTORIALS_DIR.parent
-VCEM_DIR = REPO_ROOT / "VCEM_4_0"
+VCEM_DIR = REPO_ROOT / "vcem"
 CPP_PY_DIR = VCEM_DIR / "cpp" / "python"
 
 WORKBOOK_COLUMNS = ("Parameter", "Symbol", "Value", "Units", "Note")
@@ -37,7 +37,7 @@ WORKBOOK_COLUMNS = ("Parameter", "Symbol", "Value", "Units", "Note")
 # ── Paths and engine ─────────────────────────────────────────────────────────
 
 def setup_paths() -> Path:
-    """Put VCEM_4_0 (fracture_utils) and the C++ extension dir on sys.path."""
+    """Put VCEM (fracture_utils) and the C++ extension dir on sys.path."""
     for p in (VCEM_DIR, CPP_PY_DIR):
         if str(p) not in sys.path:
             sys.path.insert(0, str(p))
@@ -291,6 +291,11 @@ def write_provenance(run_dir: Path, run_label: str, *, title: str, tables,
 
         f.write("## (4) Run Statistics\n\n")
         stats = dict(run_stats)
+        try:
+            import fracture_utils
+            stats["vcem_version"] = fracture_utils.__version__
+        except Exception:
+            stats["vcem_version"] = "<unknown>"
         stats.update(git_info())
         stats.update(machine_info())
         _write_dict_block(f, "Runtime and machine", stats)
