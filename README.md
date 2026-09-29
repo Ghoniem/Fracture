@@ -261,8 +261,8 @@ Fracture/
 │   ├── notebooks/                  # SimulationsCpp.ipynb — the main driver
 │   ├── preamble.py                 # notebook path and import helper
 │   └── output/                     # timestamped run directories (gitignored)
-├── VCM_3_4/                    # Frozen Python baseline with validation outputs
-├── _archive/                   # VCM_1_0 … VCM_3_3 and early multi-crack code (read-only)
+├── _archive/                   # VCM_1_0 … VCM_3_4 and early multi-crack code (read-only)
+├── tutorials/                  # two self-checking tutorials on simple crack problems
 ├── tools/                      # run videos, symmetry diagnostic
 ├── docs/
 │   ├── Publications/                     # the two published VCEM papers (PDF)
@@ -280,7 +280,7 @@ Fracture/
 | Module | Status | Description |
 |---|---|---|
 | `VCEM_4_0/` | **Active (development)** | Excel-driven workflow, C++ backend, random flaw populations, fragmentation diagnostics. Recommended starting point. |
-| `VCM_3_4/` | **Frozen (baseline)** | Pure-Python VCM 3.3 frozen for displacement-controlled network runs; carries the validation outputs and `ValidationRunner.ipynb`. |
+| `_archive/VCM_3_4/` | Archived (last Python baseline) | VCM 3.3 frozen for displacement-controlled network runs; carries the analytical validation outputs and `ValidationRunner.ipynb`. |
 | `_archive/VCM_3_0` – `VCM_3_3` | Archived | BEM coupling (3.0), coupled evolution (3.1), disk compression (3.2), network energetics and topology operations (3.3). |
 | `_archive/VCM_2_0` – `VCM_2_2` | Archived | Network evolution in uniform and non-uniform fields; kinked, branched and curved-crack validation; mesh-budget policy. |
 | `_archive/VCM_1_0` – `VCM_1_3` | Archived | First VCM: arbitrary polyline networks with junctions and intersections, arc parametrization. |
@@ -358,6 +358,15 @@ See [`VCEM_4_0/cpp/README.md`](VCEM_4_0/cpp/README.md) for details.
 ---
 
 ## 5. Quick start
+
+**New to VCEM?** Start with [`tutorials/`](tutorials/). Two short notebooks run the full
+workbook → notebook → stamped output workflow on problems with exact answers, using the Python
+engine only:
+
+| Tutorial | What it does |
+|---|---|
+| [01 — Inclined crack SIFs](tutorials/01_inclined_crack_sif/01_inclined_crack_sif.ipynb) | $K_I$, $K_{II}$ and COD of an inclined crack against the exact solution, plus panel convergence |
+| [02 — Kinking and growth](tutorials/02_crack_kinking_growth/02_crack_kinking_growth.ipynb) | a 45° crack kinks by the MTS angle and turns perpendicular to the load |
 
 ### 5.1 Notebook (recommended)
 
@@ -456,11 +465,11 @@ it.
 ## 8. Examples, tests and verification
 
 **Driver notebooks** — `VCEM_4_0/notebooks/SimulationsCpp.ipynb` (Excel-driven,
-C++/Python switchable); `VCM_3_4/notebooks/Simulations.ipynb` (cases
+C++/Python switchable); `_archive/VCM_3_4/notebooks/Simulations.ipynb` (cases
 `disk_compression_2`, `disk_compression_inclined`, `disk_energetics`,
-`disk_experiments`) and `VCM_3_4/notebooks/ValidationRunner.ipynb`.
+`disk_experiments`) and `_archive/VCM_3_4/notebooks/ValidationRunner.ipynb`.
 
-**Analytical validation** — results in `VCM_3_4/output/`:
+**Analytical validation** — results in `_archive/VCM_3_4/output/`:
 
 | Case | Reference |
 |---|---|
@@ -621,9 +630,8 @@ Full reference lists are in the `.bib` files under `docs/`.
 
 ## 12. Repository conventions
 
-- **One active module, frozen predecessors.** Development happens in `VCEM_4_0/`;
-  `VCM_3_4/` is the frozen Python baseline and `_archive/` is read-only, so earlier
-  results stay reproducible.
+- **One active module, archived predecessors.** Development happens in `VCEM_4_0/`;
+  `_archive/` (VCM 1.0 through 3.4) is read-only, so earlier results stay reproducible.
 - **The workbook is the case.** Parameters live in the Excel workbook with a key, value
   and description; code reads them and does not hard-code them.
 - **Outputs are immutable and stamped.** Runs never overwrite one another;
