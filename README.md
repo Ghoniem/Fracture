@@ -304,7 +304,7 @@ further development.
 ### 4.1 Python environment
 
 ```bash
-git clone https://github.com/Ghoniem-Org/Fracture.git
+git clone https://github.com/Ghoniem/Fracture.git
 cd Fracture
 python -m pip install -r requirements.txt
 python -m pip install openpyxl pybind11
