@@ -239,7 +239,7 @@ $p = P/(L h)$.
 ## 3. Repository structure
 
 ```
-VCEM/
+Fracture/
 ├── vcem/                       # The code — recommended entry point
 │   ├── fracture_utils/             # Python package (v4.1.0)
 │   │   ├── Usolver/                    # network graph, panels, kernels, constraints, KKT,
@@ -302,13 +302,15 @@ further development.
 ### Versions and releases
 
 VCEM uses [semantic versioning](https://semver.org). The version lives in git tags and
-releases, never in folder names.
+releases, never in folder names. The code is VCEM; the GitHub repository keeps its
+original name, [`Ghoniem/Fracture`](https://github.com/Ghoniem/Fracture), and releases are
+listed under its [Releases](https://github.com/Ghoniem/Fracture/releases) page.
 
 | Where | Name |
 |---|---|
 | Git tag on the release commit | `v4.1.0` |
 | GitHub release title | `VCEM 4.1.0` |
-| Downloadable archive | `VCEM-4.1.0.zip` |
+| Downloadable archive (attached to the release) | `VCEM-4.1.0.zip` |
 | Separate local copy of a release | `VCEM-4.1.0` |
 
 The version in `vcem/fracture_utils/__init__.py` (`__version__`) and in the C++ module
@@ -326,8 +328,8 @@ that release's archive.
 ### 4.1 Python environment
 
 ```bash
-git clone https://github.com/Ghoniem/VCEM.git
-cd VCEM
+git clone https://github.com/Ghoniem/Fracture.git
+cd Fracture
 python -m pip install -r requirements.txt
 python -m pip install openpyxl pybind11
 ```
@@ -632,7 +634,7 @@ Work in progress, in [`docs/Fragmentation_Phase_Transition/`](docs/Fragmentation
   Variational Crack Element Method Framework* (in preparation).
 
 To cite the software itself, give the release you used, e.g. *VCEM 4.1.0*
-(git tag `v4.1.0`, https://github.com/Ghoniem/VCEM).
+(git tag `v4.1.0`, https://github.com/Ghoniem/Fracture).
 
 Related work from the group:
 

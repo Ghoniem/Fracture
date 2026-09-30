@@ -80,4 +80,4 @@ VCM 3.4, from 2026-05-25) together with the restructuring into a released packag
 
 The VCM versions are preserved unchanged in `_archive/`.
 
-[4.1.0]: https://github.com/Ghoniem/VCEM/releases/tag/v4.1.0
+[4.1.0]: https://github.com/Ghoniem/Fracture/releases/tag/v4.1.0
