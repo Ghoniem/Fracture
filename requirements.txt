@@ -20,5 +20,15 @@ osqp>=0.6
 # Geometry / graph utilities (if used)
 networkx>=3.2
 
+# Case workbooks (Excel input)
+openpyxl>=3.1
+
+# Run videos (imageio-ffmpeg bundles an ffmpeg binary)
+imageio>=2.34
+imageio-ffmpeg>=0.5
+
+# Building the C++ backend (vcem/cpp)
+pybind11>=2.12
+
 # Optional: performance
 numba>=0.59

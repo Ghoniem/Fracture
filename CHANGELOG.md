@@ -4,6 +4,23 @@ All notable changes to VCEM are recorded here. Versions follow
 [semantic versioning](https://semver.org). Each release is a git tag `vX.Y.Z` and a
 GitHub release titled `VCEM X.Y.Z`.
 
+## [Unreleased]
+
+### Changed
+
+- The C++ backend is built against the repository's `venv_fracture` (Python 3.14) instead
+  of the retired conda env `vcem_4_0`; `vcem/cpp/README.md` documents the build and the
+  agreement-test check.
+- `requirements.txt` now includes `openpyxl`, `imageio`, `imageio-ffmpeg` and `pybind11`,
+  so a single install covers workbooks, run videos and the C++ build.
+
+### Fixed
+
+- `vcem/cpp/python/run_disk_compression_2.py` loads `disk_compression_data.xlsx` (the
+  workbook renamed in 4.1.0) and accepts a workbook path as its argument.
+- The 4.1.0 note that "the bundled `bem_cpp` binary is built for CPython 3.10" was
+  wrong: the extension is not distributed and must be built for the interpreter in use.
+
 ## [4.1.0] — 2026-09-29
 
 The first tagged release. It covers the VCEM 4.0 development line (the C++ port of
@@ -80,4 +97,5 @@ VCM 3.4, from 2026-05-25) together with the restructuring into a released packag
 
 The VCM versions are preserved unchanged in `_archive/`.
 
+[Unreleased]: https://github.com/Ghoniem/Fracture/compare/v4.1.0...HEAD
 [4.1.0]: https://github.com/Ghoniem/Fracture/releases/tag/v4.1.0
