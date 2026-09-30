@@ -22,7 +22,7 @@ than a volume mesh.
 - **Languages** — Python (formulation, orchestration, post-processing) and C++17
   (Eigen + OpenMP backend for the BEM, KKT and topology hot paths, exposed through
   pybind11).
-- **Version** — 4.1.0 ([release notes](CHANGELOG.md)). Releases are git tags `vX.Y.Z`;
+- **Version** — 4.1.1 ([release notes](CHANGELOG.md)). Releases are git tags `vX.Y.Z`;
   see [Versions and releases](#versions-and-releases).
 - **License** — MIT.
 - **Name** — *VCM* (Variational Crack Method) is the 1.x–3.x Python line; *VCEM*
@@ -241,7 +241,7 @@ $p = P/(L h)$.
 ```
 Fracture/
 ├── vcem/                       # The code — recommended entry point
-│   ├── fracture_utils/             # Python package (v4.1.0)
+│   ├── fracture_utils/             # Python package (v4.1.1)
 │   │   ├── Usolver/                    # network graph, panels, kernels, constraints, KKT,
 │   │   │                               # isolation, C++ dispatch (cpp_dispatch.py)
 │   │   ├── Ubem/                       # BEM solver, BCs, coupling (one-way / iterative /
@@ -333,7 +333,7 @@ cd Fracture
 python -m pip install -r requirements.txt
 ```
 
-Requirements: Python 3.10 or newer (4.1.0 is tested on 3.14) with `numpy`, `scipy`,
+Requirements: Python 3.10 or newer (tested on 3.14) with `numpy`, `scipy`,
 `pandas`, `matplotlib`, `networkx`, `jupyterlab` and `ipykernel`; `openpyxl` for the case
 workbook; `imageio` and `imageio-ffmpeg` for run videos (the latter bundles ffmpeg); and
 `pybind11` to build the C++ backend. `cvxopt`, `osqp` and `numba` are listed but optional.

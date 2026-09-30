@@ -1,0 +1,2 @@
+run,engine,beta_deg,n_steps,L_final_mm,theta_1_deg,theta_MTS_deg,KI_final,KII_final,stop_reason,status
+20260929_180344_kinking_growth_1d7539c8,python,45,6,29.85983994,-53.13010235,-53.13010235,20518075.01,158990.5917,n_steps reached,PASS

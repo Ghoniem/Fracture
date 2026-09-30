@@ -28,7 +28,7 @@ using vcem::bem::BEMSolver2D;
 
 PYBIND11_MODULE(bem_cpp, m) {
     m.doc() = "VCEM BEM C++ kernel (Eigen + pybind11)";
-    m.attr("__version__") = "4.1.0";
+    m.attr("__version__") = "4.1.1";
 
 #if defined(VCEM_HAVE_OPENMP)
     m.attr("openmp_available") = true;

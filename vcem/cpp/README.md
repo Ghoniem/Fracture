@@ -73,4 +73,4 @@ foreach ($t in "kernels","edge_dislocation","assemble_operator","boundary_operat
 }
 ```
 
-`bem_cpp.__version__` matches the VCEM release (4.1.0).
+`bem_cpp.__version__` matches the current VCEM release (`fracture_utils.__version__`).

@@ -19,7 +19,7 @@ from __future__ import annotations
 from typing import Any, Set
 import pkgutil
 
-__version__ = "4.1.0"
+__version__ = "4.1.1"
 
 
 def _discover_children() -> Set[str]:
