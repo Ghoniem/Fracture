@@ -1,4 +1,4 @@
-Diagnostics — 20260929_164911_kinking_growth_97d0c0e5
+Diagnostics — 20260929_180344_kinking_growth_1d7539c8
 
 [PASS] first kink angle vs MTS: 7.105e-15 deg (tolerance 1 deg)
 [PASS] final |K_II| / K_I: 0.007749 - (tolerance 0.05 -)

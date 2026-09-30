@@ -6,6 +6,10 @@ GitHub release titled `VCEM X.Y.Z`.
 
 ## [Unreleased]
 
+## [4.1.1] — 2026-09-29
+
+A patch release: build, packaging and tooling fixes. Solver results are unchanged.
+
 ### Changed
 
 - The C++ backend is built against the repository's `venv_fracture` (Python 3.14) instead
@@ -20,6 +24,11 @@ GitHub release titled `VCEM X.Y.Z`.
   workbook renamed in 4.1.0) and accepts a workbook path as its argument.
 - The 4.1.0 note that "the bundled `bem_cpp` binary is built for CPython 3.10" was
   wrong: the extension is not distributed and must be built for the interpreter in use.
+
+### Removed
+
+- Committed macOS `.DS_Store` files (repository root and `_archive/`); `.gitignore`
+  already excludes them.
 
 ## [4.1.0] — 2026-09-29
 
@@ -97,5 +106,6 @@ VCM 3.4, from 2026-05-25) together with the restructuring into a released packag
 
 The VCM versions are preserved unchanged in `_archive/`.
 
-[Unreleased]: https://github.com/Ghoniem/Fracture/compare/v4.1.0...HEAD
+[Unreleased]: https://github.com/Ghoniem/Fracture/compare/v4.1.1...HEAD
+[4.1.1]: https://github.com/Ghoniem/Fracture/releases/tag/v4.1.1
 [4.1.0]: https://github.com/Ghoniem/Fracture/releases/tag/v4.1.0
