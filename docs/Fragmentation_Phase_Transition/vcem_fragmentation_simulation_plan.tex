@@ -1,0 +1,474 @@
+%% ============================================================================
+%%  Simulation Campaign Plan
+%%  Fragmentation of Compressed Disks as a Phase Transition (VCEM)
+%%  N. M. Ghoniem
+%% ============================================================================
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,bm}
+\usepackage{booktabs,longtable,array}
+\usepackage{xcolor}
+\usepackage[colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue]{hyperref}
+\usepackage{enumitem}
+\setlist{nosep,leftmargin=1.5em}
+
+\newcommand{\Pinf}{P_\infty}
+\newcommand{\xc}{x_c}
+\newcommand{\rhoc}{\rho_c}
+\newcommand{\rhostar}{\rho^{\star}}
+
+\title{\textbf{A Tractable, Self-Learning Simulation Campaign for\\
+Fragmentation as a Phase Transition with VCEM}}
+\author{N. M. Ghoniem}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This document specifies a complete, budget-bounded plan for the VCEM simulation
+campaign that will populate the results section of the manuscript
+\emph{``Fragmentation of Compressed Disks as a Phase Transition.''} It articulates the
+logic behind every parametric choice, fixes the ranges and combinations of input
+parameters, sizes the ensembles, and reconciles the total cost against a single
+workstation running continuously for 10--20 days. It then provides a master table of
+runs that can be executed with agentic assistance, and defines a self-learning
+controller that reads the results of completed runs, measures convergence of each
+target quantity, and reallocates the remaining compute toward the runs that most
+reduce the uncertainty in the paper's headline results.
+\end{abstract}
+
+\tableofcontents
+
+%% ============================================================================
+\section{Objectives and the statistics the paper requires}
+\label{sec:objectives}
+%% ============================================================================
+
+The campaign exists to measure a small number of well-defined quantities. Every run
+is justified by its contribution to one of them. Table~\ref{tab:targets} maps each
+paper deliverable to the observable that produces it and to the design feature that
+the observable demands. The guiding principle is that \emph{the control parameter is
+internal to each run}: as the load increases, a single VCEM simulation traverses the
+entire path from an intact disk to a fragmented one, so one run yields the whole
+curves $\Pinf(x)$, $\chi(x)$, $\xi(x)$, the spanning/peak/fragmentation thresholds,
+and a complete avalanche sequence. Consequently we do \emph{not} spend separate runs
+per value of the control parameter; we spend runs on \emph{ensembles} (random seeds)
+and on \emph{system sizes}, and we harvest the rest from each trajectory.
+
+\begin{table}[h]
+\centering
+\small
+\renewcommand{\arraystretch}{1.25}
+\begin{tabular}{p{4.6cm} p{4.8cm} p{4.6cm}}
+\toprule
+\textbf{Paper deliverable} & \textbf{Observable / estimator} & \textbf{Design requirement}\\
+\midrule
+Critical point(s) $\xc$ ($x_{\rm span}$, $x_{\rm peak}$, $x_{\rm frag}$)
+ & peak of $\chi_S(x)$; threshold crossings of $\Pinf$, $R(x)$, $F$
+ & ensemble at each size; fine load increments near the peak \\
+Static exponents $\beta,\gamma,\nu$
+ & finite-size scaling of $\Pinf$, $\chi_{S,\max}$, $\xi$; data collapse
+ & $\ge 4$ system sizes spanning a factor $\sim$4 in $L$ \\
+Cluster exponent $\tau$
+ & fit of $n_s\sim s^{-\tau}$ at $\xc$
+ & large-size runs at criticality (tail statistics) \\
+Avalanche exponent $\tau_A$
+ & MLE fit of $P(A)\sim A^{-\tau_A}$ (energy drops)
+ & pooled over \emph{all} runs; essentially free \\
+Order of the transition (continuous / first-order / hybrid)
+ & shape of $\Pinf$ distribution; hysteresis; $\chi$ divergence vs.\ jump
+ & disorder-strength sweep; replicate ensembles \\
+Universality verdict
+ & comparison of $\{\beta,\gamma,\nu,\tau,\tau_A\}$ to reference classes
+ & all of the above, with bootstrap confidence intervals \\
+Protocol \& anisotropy robustness
+ & shift of $\xc$ and exponents under load/displacement, orientation
+ & small control ensembles \\
+\bottomrule
+\end{tabular}
+\caption{Mapping from paper deliverables to observables and to the design features
+that the campaign must provide.}
+\label{tab:targets}
+\end{table}
+
+%% ============================================================================
+\section{Logic of the parametric selection}
+\label{sec:logic}
+%% ============================================================================
+
+\subsection{Which parameters matter, and why}
+
+\paragraph{System size $L$ (primary, expensive).}
+Finite-size scaling is the only reliable route to the critical exponents and to a
+size-independent $\xc$. It requires several sizes spanning as wide a range as the
+budget allows. The cost penalty is severe: at fixed crack density the initial flaw
+count grows as $N_0 \propto L^2$, and the dense VCEM solve costs roughly
+$\mathcal{O}(N_0^2)$ per increment with $\mathcal{O}(N_0)$ increments, so run time
+scales steeply with $L$. Size is therefore the axis on which we spend most carefully,
+using a \emph{pyramid} of ensembles (many cheap small runs, few decisive large runs).
+
+\paragraph{Initial crack density $\rhoc$ (control / phase-boundary axis).}
+Density sets the proximity of the initial state to the connectivity threshold and is
+the natural ``occupation probability'' analog. Holding $\rhoc$ fixed isolates
+finite-size effects; sweeping $\rhoc$ at fixed $L$ maps the phase boundary and tests
+whether damage, load, and density are equivalent control parameters.
+
+\paragraph{Disorder strength $w$ (transition-order axis).}
+The width of the flaw-length (or threshold) distribution is the parameter known from
+statistical-fracture theory to control whether breakdown is continuous and
+percolation-like (strong disorder) or abrupt and first-order (weak disorder).
+Resolving Hypotheses I--IV of the manuscript requires at least three disorder levels.
+
+\paragraph{Flaw orientation (anisotropy axis).}
+Aligned flaw populations bias coalescence and can shift $\xc$ and, possibly, the
+exponents. A three-level isotropic$\rightarrow$aligned sweep bounds this effect.
+
+\paragraph{Loading protocol (robustness).}
+Load- vs.\ displacement-control must give the same intensive critical behavior if the
+transition is genuine; a single paired ensemble checks this.
+
+\paragraph{Fixed quantities.}
+Elastic constants $E,\nu$ and toughness $G_c$ set only scales and are held fixed.
+Crack-growth rule (maximum energy-release-rate, mixed-mode) and the connectivity
+tolerance are fixed across the campaign so that all runs are comparable.
+
+\subsection{Ranges and combinations}
+
+\begin{itemize}
+\item \textbf{Sizes:} four nominal sizes with initial flaw counts
+$N_0 \in \{64,\,256,\,576,\,1024\}$, i.e.\ linear sizes in the ratio
+$1\!:\!2\!:\!3\!:\!4$ (since $N_0\propto L^2$). An optional fifth anchor
+($N_0\approx 2304$, ratio 6) is held in reserve for the adaptive loop.
+\item \textbf{Density:} $\rhoc/\rhostar \in \{0.50,0.70,0.85,1.00,1.15,1.30,1.50\}$,
+where $\rhostar$ is the reference density chosen (from pilots) near the expected
+critical density.
+\item \textbf{Disorder:} length-distribution coefficient of variation
+$w \in \{0.15\ (\text{narrow}),\,0.40\ (\text{medium}),\,0.80\ (\text{broad})\}$.
+\item \textbf{Orientation:} $\{$isotropic, $30^\circ$ half-width aligned, strongly
+aligned$\}$.
+\item \textbf{Protocol:} $\{$displacement-control (default), load-control$\}$.
+\item \textbf{Dominant-flaw checks:} dominant-to-background length ratio
+$r \in \{2,4\}$ on a medium background.
+\item \textbf{Seeds:} random realizations per cell, allocated as a size-pyramid in the
+finite-size campaign and flat ($\sim$30--40) elsewhere.
+\end{itemize}
+
+A full factorial over these axes is neither necessary nor affordable. Instead we use a
+\emph{one-reference, several one-axis sweeps} design: a single reference cell
+($\rhostar$, medium disorder, isotropic, displacement-control) is shared by every
+campaign, and each campaign perturbs exactly one axis away from it. This is the
+classical efficient screening design; it isolates each effect, reuses the reference
+ensemble, and keeps the run count near 700 rather than the many thousands a factorial
+would demand.
+
+%% ============================================================================
+\section{Cost model and budget reconciliation}
+\label{sec:budget}
+%% ============================================================================
+
+\subsection{Per-run cost model}
+
+Calibrate the wall-clock time per run against the initial flaw count with a two-parameter
+power law,
+\begin{equation}
+t(N_0) \;=\; t_{\rm ref}\left(\frac{N_0}{N_{\rm ref}}\right)^{p},
+\label{eq:cost}
+\end{equation}
+where $p\approx 1.5$--$2.0$ reflects the dense-solve scaling. The planning estimates
+below assume the representative times in Table~\ref{tab:times}; \textbf{these must be
+recalibrated from 3--5 pilot runs} (Section~\ref{sec:pilot}) and Eq.~\eqref{eq:cost}
+re-evaluated before committing the budget.
+
+\begin{table}[h]
+\centering
+\small
+\renewcommand{\arraystretch}{1.2}
+\begin{tabular}{lccc}
+\toprule
+Size label & $N_0$ (flaws) & linear ratio & planning time/run \\
+\midrule
+S  & 64   & 1 & 0.20 h ($\sim$12 min) \\
+M  & 256  & 2 & 0.80 h ($\sim$48 min) \\
+L  & 576  & 3 & 2.5 h \\
+XL & 1024 & 4 & 6.0 h \\
+(XXL, reserve) & 2304 & 6 & $\sim$20 h \\
+\bottomrule
+\end{tabular}
+\caption{Representative per-run times used for planning. Recalibrate with pilots.}
+\label{tab:times}
+\end{table}
+
+\subsection{Total budget and calendar mapping}
+
+The baseline design (Section~\ref{sec:table}) totals $\approx 706$ runs and
+$\approx 620$ run-hours of serial-equivalent compute. We add a $\sim$20\,\%
+\emph{adaptive reserve} ($\approx 130$ run-hours) that the self-learning controller
+spends on refinement, bringing the plan to $\approx 750$ run-hours. The calendar time
+depends on how many runs execute concurrently on the workstation
+(Table~\ref{tab:calendar}). Because small and medium runs are the bulk of the count,
+the recommended mode is to run several of them in parallel (pinned to disjoint core
+sets) while reserving more threads for the few L/XL runs.
+
+\begin{table}[h]
+\centering
+\small
+\renewcommand{\arraystretch}{1.2}
+\begin{tabular}{cccc}
+\toprule
+Concurrent runs & Throughput (run-h/day) & Baseline 620 h & With reserve 750 h \\
+\midrule
+1 (serial)   & 24  & 25.8 d & 31.3 d \\
+2            & 48  & 12.9 d & 15.6 d \\
+3            & 72  & 8.6 d  & 10.4 d \\
+4            & 96  & 6.5 d  & 7.8 d  \\
+6            & 144 & 4.3 d  & 5.2 d  \\
+\bottomrule
+\end{tabular}
+\caption{Calendar time vs.\ concurrency. \textbf{Recommendation:} 2--3 concurrent runs
+fits the 10--20 day window with the full adaptive reserve; 4--6 finishes the baseline
+early and frees days for larger-$L$ anchors and critical-region refinement.}
+\label{tab:calendar}
+\end{table}
+
+%% ============================================================================
+\section{Ensemble allocation strategy}
+\label{sec:ensembles}
+%% ============================================================================
+
+Statistical precision on a finite-size-scaling fit is dominated by the cheap small
+sizes (which can be run many times) anchored by a few expensive large sizes (which fix
+the asymptotic slope). We therefore allocate seeds as a \emph{pyramid} in the
+finite-size campaign:
+\[
+\text{S}:160,\quad \text{M}:80,\quad \text{L}:40,\quad \text{XL}:16 .
+\]
+All other campaigns use flat ensembles of 30--40 seeds, which suffice because they ask
+only for the \emph{shift} of an already-located transition, not for an absolute
+exponent. The reference cell (size M, $\rhostar$, medium disorder, isotropic,
+displacement) is computed once and \emph{reused} by every campaign that includes it,
+eliminating redundant runs.
+
+%% ============================================================================
+\section{Master run table}
+\label{sec:table}
+%% ============================================================================
+
+Table~\ref{tab:runs} is the executable plan. Each row is a \emph{cell}: a fixed
+parameter combination replicated over the listed number of random seeds. The agent
+executes cells in priority order (P0 first), and within a cell executes seeds until the
+listed count is reached or the controller (Section~\ref{sec:learning}) declares the
+relevant target converged. ``Reuse'' marks cells already produced by Campaign~1.
+
+\begin{longtable}{l l c c c c c c c c}
+\caption{Master run table. $N_0$ = initial flaws; $w$ = disorder (CoV); seeds =
+realizations; h/run from Table~\ref{tab:times}; cell-h = seeds$\times$h/run.}
+\label{tab:runs}\\
+\toprule
+ID & Campaign & $N_0$ & $\rhoc/\rhostar$ & $w$ & Orient. & Protocol & Seeds & h/run & Cell-h \\
+\midrule
+\endfirsthead
+\multicolumn{10}{c}{\tablename~\ref{tab:runs} (continued)}\\
+\toprule
+ID & Campaign & $N_0$ & $\rhoc/\rhostar$ & $w$ & Orient. & Protocol & Seeds & h/run & Cell-h \\
+\midrule
+\endhead
+\midrule
+\multicolumn{10}{r}{\emph{continued on next page}}\\
+\endfoot
+\bottomrule
+\endlastfoot
+\multicolumn{10}{l}{\textbf{Campaign 1 --- Finite-size scaling (P0, primary)}}\\
+C1-S  & FSS & 64   & 1.00 & 0.40 & iso & disp & 160 & 0.20 & 32.0 \\
+C1-M$^\dagger$ & FSS & 256  & 1.00 & 0.40 & iso & disp & 80  & 0.80 & 64.0 \\
+C1-L  & FSS & 576  & 1.00 & 0.40 & iso & disp & 40  & 2.50 & 100.0 \\
+C1-XL & FSS & 1024 & 1.00 & 0.40 & iso & disp & 16  & 6.00 & 96.0 \\[2pt]
+\multicolumn{10}{l}{\textbf{Campaign 2 --- Density sweep (P1)}}\\
+C2-a & dens & 256 & 0.50 & 0.40 & iso & disp & 30 & 0.80 & 24.0 \\
+C2-b & dens & 256 & 0.70 & 0.40 & iso & disp & 30 & 0.80 & 24.0 \\
+C2-c & dens & 256 & 0.85 & 0.40 & iso & disp & 30 & 0.80 & 24.0 \\
+C2-d & dens & 256 & 1.00 & 0.40 & iso & disp & \multicolumn{3}{c}{reuse C1-M} \\
+C2-e & dens & 256 & 1.15 & 0.40 & iso & disp & 30 & 0.80 & 24.0 \\
+C2-f & dens & 256 & 1.30 & 0.40 & iso & disp & 30 & 0.80 & 24.0 \\
+C2-g & dens & 256 & 1.50 & 0.40 & iso & disp & 30 & 0.80 & 24.0 \\[2pt]
+\multicolumn{10}{l}{\textbf{Campaign 3 --- Disorder strength (P1)}}\\
+C3-narrow & dis & 256 & 1.00 & 0.15 & iso & disp & 40 & 0.80 & 32.0 \\
+C3-med    & dis & 256 & 1.00 & 0.40 & iso & disp & \multicolumn{3}{c}{reuse C1-M} \\
+C3-broad  & dis & 256 & 1.00 & 0.80 & iso & disp & 40 & 0.80 & 32.0 \\[2pt]
+\multicolumn{10}{l}{\textbf{Campaign 4 --- Orientation / anisotropy (P2)}}\\
+C4-iso     & ori & 256 & 1.00 & 0.40 & iso     & disp & \multicolumn{3}{c}{reuse C1-M} \\
+C4-partial & ori & 256 & 1.00 & 0.40 & $30^\circ$ & disp & 30 & 0.80 & 24.0 \\
+C4-aligned & ori & 256 & 1.00 & 0.40 & aligned & disp & 30 & 0.80 & 24.0 \\[2pt]
+\multicolumn{10}{l}{\textbf{Campaign 5 --- Protocol \& dominant-flaw checks (P2)}}\\
+C5-load    & prot & 256 & 1.00 & 0.40 & iso & load & 30 & 0.80 & 24.0 \\
+C5-domin2  & dom  & 256 & 1.00 & 0.40 & iso & disp & 30 & 0.80 & 24.0 \\
+C5-domin4  & dom  & 256 & 1.00 & 0.40 & iso & disp & 30 & 0.80 & 24.0 \\
+\midrule
+\multicolumn{9}{l}{\textbf{Baseline total (new runs only)}} & \textbf{$\approx$620 h}\\
+\multicolumn{9}{l}{Adaptive reserve ($\sim$20\,\%)} & $\approx$130 h\\
+\multicolumn{9}{l}{\textbf{Planned grand total}} & \textbf{$\approx$750 h}\\
+\end{longtable}
+
+\noindent$^\dagger$ C1-M is the shared \emph{reference cell}; campaigns 2--5 reuse it
+for their isotropic / medium-disorder / displacement / $\rhostar$ point.
+
+Baseline new-run counts by campaign: C1 $=296$, C2 $=180$, C3 $=80$, C4 $=60$,
+C5 $=90$; total $\approx 706$ runs.
+
+%% ============================================================================
+\section{Self-learning adaptive controller}
+\label{sec:learning}
+%% ============================================================================
+
+The campaign is not a static list executed blindly; it is a feedback loop. After every
+completed batch (e.g.\ daily, or every $k$ runs) an aggregator recomputes the target
+quantities and their uncertainties, and a controller decides where the next runs go.
+This converts a fixed budget into the \emph{most informative} set of runs achievable
+within it.
+
+\subsection{Per-run record}
+
+Each run writes one machine-readable record (JSON). The controller never re-parses raw
+fields; it reads these summaries.
+\begin{verbatim}
+{
+  "run_id": "C1-L_seed037",
+  "campaign": "FSS",
+  "params": {"N0":576,"rho_ratio":1.00,"w":0.40,
+             "orient":"iso","protocol":"disp","seed":37,
+             "dominant_ratio":null},
+  "status": "completed",          "wall_time_h": 2.43,
+  "x_tip":0.31,"x_span":0.62,"x_peak":0.66,"x_frag":0.71,
+  "chi_max":184.2,"x_at_chi_max":0.645,
+  "Pinf_curve":"arrays/C1-L_seed037_Pinf.npy",
+  "xi_curve":"arrays/C1-L_seed037_xi.npy",
+  "ns_at_xc":"arrays/C1-L_seed037_ns.npy",
+  "avalanches":"arrays/C1-L_seed037_dE.npy",
+  "n_avalanches":4172,"tauA_run":1.9,
+  "N_fragments":7,"Pinf_final":0.88,
+  "converged_flags":{"solver":true,"increment_refined":true}
+}
+\end{verbatim}
+
+\subsection{Aggregated metrics (recomputed each batch)}
+
+\begin{itemize}
+\item Per size $L$: ensemble-mean $\langle\Pinf(x)\rangle$, $\langle\chi_S(x)\rangle$,
+$\langle\xi(x)\rangle$; the peak height $\chi_{S,\max}(L)$ and its location
+$x_c(L)$, each with a \emph{bootstrap} confidence interval over seeds.
+\item Finite-size-scaling fits for $\beta/\nu$, $\gamma/\nu$, $\nu$, and the
+data-collapse quality $Q$ (residual of the collapse onto the master curve).
+\item Pooled cluster fit $\tau$ at $\xc$ and pooled avalanche fit $\tau_A$ by maximum
+likelihood with a Clauset--Shalizi--Newman lower-cutoff selection and a
+Kolmogorov--Smirnov goodness-of-fit $p$-value.
+\item Transition-order diagnostics: the across-seed distribution of $\Pinf$ near $\xc$
+(unimodal vs.\ bimodal), and any hysteresis between loading and unloading.
+\end{itemize}
+
+\subsection{Decision rules}
+
+After each batch the controller applies the following rules, in order.
+\begin{enumerate}
+\item \textbf{Convergence test.} For each target quantity compute the relative
+confidence-interval half-width. Targets: $x_c$ to $\le 5\%$, exponent ratios to
+$\le 10\%$, $\tau_A$ to $\le 10\%$. Mark converged targets and freeze the cells that
+only serve them.
+\item \textbf{Greedy variance reduction.} Direct the next seeds to the \emph{unfrozen}
+cell with the largest expected reduction in a target's variance \emph{per CPU-hour}
+(a budget-aware bandit rule). Because variance falls as $1/n_{\rm seed}$ and cost is
+fixed per cell, this favors cheap cells until their marginal value drops below that of
+an expensive cell.
+\item \textbf{Critical-region refinement.} If the sampled $\chi_S(x)$ peak is resolved
+by fewer than $\sim$8 load increments across its full width at half maximum, switch new
+runs in that cell to adaptive load stepping (finer $\Delta x$ near $x_{\rm peak}$)
+rather than adding seeds.
+\item \textbf{FSS adequacy.} Fit the exponents; if the collapse quality $Q$ is poor or
+the exponents drift monotonically with $L$ (uncorrected scaling corrections),
+\emph{spend the reserve} on the XXL anchor ($N_0\approx2304$) to extend the lever arm.
+\item \textbf{Transition-order branch.} If Campaign~3 shows a bimodal $\Pinf$ or
+hysteresis at any disorder level, spawn a focused sub-ensemble (extra seeds + finer
+increments) at that level to characterize the jump/spinodal (Hypotheses III--IV).
+\item \textbf{Budget governor.} Track consumed vs.\ remaining run-hours and projected
+calendar. Keep $\ge$15\,\% reserve until P0 and P1 are converged. If behind schedule,
+shed work from the lowest priority upward (C5, then C4), never from C1.
+\end{enumerate}
+
+\subsection{Stopping criteria}
+
+Stop when either (a) all P0 and P1 targets are converged to tolerance and the P2 checks
+have at least their baseline seeds, or (b) the budget (with reserve) is exhausted. On
+stop, emit the final aggregated tables and figures (Section~\ref{sec:analysis}).
+
+%% ============================================================================
+\section{Execution protocol with agentic help}
+\label{sec:execution}
+%% ============================================================================
+
+\paragraph{Directory layout.}
+\texttt{runs/<run\_id>/} holds \texttt{input.json}, \texttt{output.json},
+\texttt{solver.log}, and \texttt{arrays/}. A top-level \texttt{manifest.csv} lists every
+cell, its target seed count, completed seeds, and status. A \texttt{controller\_state.json}
+records frozen cells, remaining budget, and the current decision.
+
+\paragraph{Agent loop.}
+(1) Read \texttt{manifest.csv} and \texttt{controller\_state.json};
+(2) select the next \texttt{(cell, seed)} per the priority and variance rules;
+(3) write \texttt{input.json} and launch the VCEM solver;
+(4) on completion, parse outputs into \texttt{output.json} and append to the aggregates;
+(5) re-run the controller; (6) write the daily report; (7) repeat. The loop is
+checkpointed after every run so it resumes cleanly after an interruption or reboot.
+
+\paragraph{Pilot calibration.}
+\label{sec:pilot}
+Before the main campaign, run one seed at each of S, M, L (3--5 runs total), measure
+$t(N_0)$, fit Eq.~\eqref{eq:cost}, and rescale Tables~\ref{tab:times}--\ref{tab:calendar}.
+Also confirm that $\rhostar$ brackets the transition (i.e.\ that the reference cell
+actually reaches spanning and fragmentation); if not, shift $\rhostar$ and the
+density grid before launching.
+
+%% ============================================================================
+\section{Analysis pipeline and mapping to the paper}
+\label{sec:analysis}
+%% ============================================================================
+
+\begin{itemize}
+\item \textbf{$\xc$ and exponent ratios:} locate $x_c(L)$ from $\chi_{S,\max}(L)$;
+fit $\chi_{S,\max}\sim L^{\gamma/\nu}$, $\Pinf(L,\xc)\sim L^{-\beta/\nu}$, and the
+collapse $\Pinf L^{\beta/\nu}=\mathcal{F}[(x-\xc)L^{1/\nu}]$ to obtain
+$\beta/\nu,\gamma/\nu,\nu$ with bootstrap CIs. (Manuscript Eqs.\ for finite-size
+scaling and data collapse.)
+\item \textbf{$\tau$:} fit $n_s\sim s^{-\tau}$ pooled over the largest sizes at $\xc$.
+\item \textbf{$\tau_A$:} MLE power-law fit of the pooled energy-drop catalog with KS
+test; compare to Gutenberg--Richter energy form.
+\item \textbf{Transition order:} report the $\Pinf$ distribution and hysteresis vs.\
+disorder; classify as continuous, first-order, or hybrid.
+\item \textbf{Universality verdict:} assemble $\{\beta,\gamma,\nu,\tau,\tau_A\}$, check
+the hyperscaling relation $2\beta+\gamma=d\nu$, and compare against 2D percolation,
+random-fuse, fiber-bundle, and SOC reference values to decide whether VCEM defines a
+distinct elastic crack-network class.
+\end{itemize}
+
+These outputs populate, in order, the six results subsections of the manuscript
+(crack-network morphology; order parameters; susceptibilities and correlation length;
+finite-size scaling and exponents; avalanche statistics; universality class).
+
+%% ============================================================================
+\section{Risks and contingencies}
+\label{sec:risks}
+%% ============================================================================
+
+\begin{itemize}
+\item \textbf{Large runs overrun the time budget.} Mitigation: the pyramid caps XL at
+16 seeds; rule~4 spends the reserve on XXL \emph{only} if the exponents demand it.
+\item \textbf{$\rhostar$ mis-set.} Mitigation: the pilot brackets the transition before
+launch; the density sweep (C2) provides a fallback control parameter.
+\item \textbf{Poor avalanche statistics.} Unlikely (thousands per run), but if a regime
+is sparse the controller pools across seeds within that regime before fitting.
+\item \textbf{Solver non-convergence on dense networks.} Flagged per run
+(\texttt{converged\_flags}); non-converged runs are excluded from aggregates and
+re-seeded, not silently averaged.
+\item \textbf{Interruption / reboot.} The checkpointed agent loop resumes from
+\texttt{manifest.csv} with no lost completed runs.
+\end{itemize}
+
+\end{document}
