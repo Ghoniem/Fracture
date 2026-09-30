@@ -331,13 +331,12 @@ that release's archive.
 git clone https://github.com/Ghoniem/Fracture.git
 cd Fracture
 python -m pip install -r requirements.txt
-python -m pip install openpyxl pybind11
 ```
 
-Requirements: Python 3.10 with `numpy`, `scipy`, `pandas`, `matplotlib`, `networkx`,
-`jupyterlab` and `ipykernel`; `openpyxl` for the case workbook; `pybind11` to build the
-C++ backend. `cvxopt`, `osqp` and `numba` are listed but optional. Run videos need
-`ffmpeg` on the path.
+Requirements: Python 3.10 or newer (4.1.0 is tested on 3.14) with `numpy`, `scipy`,
+`pandas`, `matplotlib`, `networkx`, `jupyterlab` and `ipykernel`; `openpyxl` for the case
+workbook; `imageio` and `imageio-ffmpeg` for run videos (the latter bundles ffmpeg); and
+`pybind11` to build the C++ backend. `cvxopt`, `osqp` and `numba` are listed but optional.
 
 The Python layer alone runs every case: the C++ backend is an accelerator, not a
 requirement. If `bem_cpp` cannot be imported, the driver falls back to
@@ -371,7 +370,9 @@ cmake --install build --config Release
 
 On Windows add `-G "Visual Studio 17 2022" -A x64`. The install step copies the
 extension (`bem_cpp.*.pyd` / `.so`) into `cpp/python/bem_cpp/`, where the notebook
-imports it. Smoke test:
+imports it. The extension is not distributed with the repository. It is built for one
+Python version (`cp314`, for example), so rebuild it after changing interpreter; also
+delete `build/` after moving the repository, because the CMake cache records absolute paths. Smoke test:
 
 ```bash
 python -c "import sys; sys.path.insert(0, 'vcem/cpp/python'); import bem_cpp; print(bem_cpp.__version__)"

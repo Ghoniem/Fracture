@@ -1,4 +1,8 @@
-"""Run the disk_compression_2 case end-to-end (notebook equivalent).
+"""Run a Brazilian-disk case end-to-end (notebook equivalent).
+
+    python vcem/cpp/python/run_disk_compression_2.py [case.xlsx]
+
+The default case is vcem/input/disk_compression_data.xlsx.
 
 Mirrors the SimulationsCpp.ipynb engine wiring and cell-6 run logic so the
 fix in cpp_dispatch.py can be exercised from the CLI rather than restarting
@@ -27,9 +31,9 @@ matplotlib.use("Agg")          # CLI: never open a window or block on show()
 import numpy as np
 from dataclasses import replace as _dc_replace
 
-# Load case
+# Load case (optional argument: path to a case workbook)
 from input.excel_io import load_case
-xlsx = _repo_root / "input" / "disk_compression_2.xlsx"
+xlsx = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else _repo_root / "input" / "disk_compression_data.xlsx"
 cfg = load_case(xlsx)
 ENGINE = cfg.engine
 
